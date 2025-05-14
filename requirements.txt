@@ -1,5 +1,4 @@
 altgraph==0.17.4
-BrainLinkParser==0.1.0
 certifi==2025.1.31
 charset-normalizer==3.4.1
 cushy-serial==1.1.1

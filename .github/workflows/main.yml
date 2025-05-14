@@ -30,7 +30,7 @@ jobs:
       - name: Build .app
         run: |
           # replace main.py with your entrypoint or spec file
-          pyinstaller --windowed --name BrainLinkCompanion --icon assets/favicon.ico BrainCompanion.py
+          pyinstaller --windowed --name BrainLinkCompanion --icon assets/favicon.icns BrainCompanion.py
 
       - name: Zip and upload artifact (using upload-artifact@v4)
         run: |

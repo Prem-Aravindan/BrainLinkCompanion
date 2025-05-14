@@ -3,7 +3,7 @@ name: Build macOS .app
 # Run on pushes to main, or manually via the UI
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:

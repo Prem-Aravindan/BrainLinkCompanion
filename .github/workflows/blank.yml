@@ -1,0 +1,45 @@
+name: Build macOS .app
+
+# Run on pushes to main, or manually via the UI
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build .app
+        run: |
+          # replace main.py with your entrypoint or spec file
+          pyinstaller --windowed --name BrainLinkCompanion --icon assets/favicon.ico main.py
+
+      - name: Zip and upload artifact
+        run: |
+          cd dist
+          zip -r BrainLinkCompanion.app.zip BrainLinkCompanion.app
+        shell: bash
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: macos-app
+          path: dist/BrainLinkCompanion.app.zip

@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='BrainCompanion',
+    name='BrainLinkCompanion',  # <--- Consistent name
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -39,7 +39,7 @@ app = BUNDLE(
     exe,
     a.binaries,
     a.datas,
-    name='BrainCompanion.app',
+    name='BrainLinkCompanion.app',  # <--- Consistent name
     icon='assets/favicon.icns',
     bundle_identifier='com.brainlink.companion',
     info_plist={

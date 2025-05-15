@@ -31,10 +31,20 @@ jobs:
         run: |
           pyinstaller BrainCompanion_macOS.spec
 
+      - name: List dist directory contents
+        run: |
+          ls -l dist
+        shell: bash
+
       - name: Zip and upload artifact (using upload-artifact@v4)
         run: |
           cd dist
-          zip -r BrainLinkCompanion.app.zip BrainLinkCompanion.app
+          ls -l
+          if [ -d "BrainCompanion.app" ]; then
+            zip -r BrainCompanion.app.zip BrainCompanion.app
+          else
+            echo "BrainCompanion.app not found! Listing contents:" && ls -l && exit 1
+          fi
         shell: bash
 
       - name: Upload build artifact

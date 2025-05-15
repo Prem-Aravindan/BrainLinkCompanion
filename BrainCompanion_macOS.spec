@@ -32,7 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/favicon.ico',
+    icon='assets/favicon.icns',
 )
 
 app = BUNDLE(
@@ -40,7 +40,7 @@ app = BUNDLE(
     a.binaries,
     a.datas,
     name='BrainCompanion.app',
-    icon='assets/favicon.ico',
+    icon='assets/favicon.icns',
     bundle_identifier='com.brainlink.companion',
     info_plist={
         'CFBundleShortVersionString': '1.0.0',

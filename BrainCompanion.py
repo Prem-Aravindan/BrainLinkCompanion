@@ -152,28 +152,26 @@ live_data_buffer = []
 def detect_brainlink():
     ports = serial.tools.list_ports.comports()
     brainlink_port = None
-    
-    if platform.system() == 'Windows':
-        # Windows: Identifies the device by a unique substring in its HWID.
+
+    BRAINLINK_SERIALS = ("5C361634682F", "5C3616327E59")
+
+    for port in ports:
+        if (
+            getattr(port, "serial_number", None) in BRAINLINK_SERIALS
+        ):
+            brainlink_port = port.device
+            break
+
+    # Fallback: try by description or device name if not found
+    if not brainlink_port:
         for port in ports:
-            if "5C361634682F" in port.hwid:
+            if any(id in port.description.lower() for id in ["BrainLink_Pro", "neurosky", "ftdi", "silabs", "ch340"]):
                 brainlink_port = port.device
                 break
-    elif platform.system() == 'Darwin':  # macOS
-        # On macOS, look for the device by a combination of identifiers
-        # This is a generic approach and might need adjustment for actual macOS BrainLink detection
-        for port in ports:
-            # Check for typical USB-to-Serial adapter manufacturers or BrainLink identifiers
-            # You may need to adjust these based on actual device identifiers on macOS
-            if any(id in port.description.lower() for id in ["brainlink", "neurosky", "ftdi", "silabs", "ch340"]):
+            if port.device.startswith(("/dev/tty.usbserial", "/dev/tty.usbmodem")):
                 brainlink_port = port.device
                 break
-            
-            # If no matches by description, try to check by port name patterns common for USB devices on macOS
-            if not brainlink_port and port.device.startswith(("/dev/tty.usbserial", "/dev/tty.usbmodem")):
-                brainlink_port = port.device
-                break
-    
+
     return brainlink_port
 
 def onRaw(raw):

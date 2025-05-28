@@ -44,9 +44,39 @@ jobs:
           xattr -dr com.apple.quarantine dist/BrainLinkCompanion.app
         shell: bash
 
-      - name: Codesign app (ad-hoc)
+      - name: Import Apple Developer ID certificate
         run: |
-          codesign --force --deep --sign - dist/BrainLinkCompanion.app
+          security create-keychain -p "" build.keychain
+          security import ${{ secrets.APPLE_DEV_ID_P12 }} -k build.keychain -P "${{ secrets.APPLE_DEV_ID_P12_PASSWORD }}" -T /usr/bin/codesign
+          security list-keychains -s build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+        shell: bash
+
+      - name: Codesign app (Developer ID)
+        run: |
+          codesign --force --deep --options runtime \
+            --sign "${{ secrets.APPLE_DEV_ID_IDENTITY }}" \
+            dist/BrainLinkCompanion.app
+        shell: bash
+
+      - name: Package .app for notarization
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent BrainLinkCompanion.app BrainLinkCompanion.zip
+        shell: bash
+
+      - name: Notarize app with notarytool
+        run: |
+          xcrun notarytool submit dist/BrainLinkCompanion.zip --wait \
+            --key ${{ secrets.APPLE_NOTARY_API_KEY }} \
+            --key-id ${{ secrets.APPLE_NOTARY_API_KEY_ID }} \
+            --issuer ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+        shell: bash
+
+      - name: Staple notarization ticket
+        run: |
+          xcrun stapler staple dist/BrainLinkCompanion.app
         shell: bash
 
       - name: Package .app preserving metadata

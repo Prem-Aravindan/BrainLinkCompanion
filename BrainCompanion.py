@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer, Qt, QSettings
 from PySide6.QtGui import QIcon
 import pyqtgraph as pg
-from scipy.signal import butter, filtfilt, iirnotch, welch
+from scipy.signal import butter, filtfilt, iirnotch, welch, decimate
 from scipy.integrate import simpson as simps
 import numpy as np
 import platform
@@ -146,33 +146,31 @@ def resource_path(relative_path):
 BACKEND_URL = None
 SERIAL_PORT = None
 SERIAL_BAUD = 115200
+ALLOWED_HWIDS = []
 stop_thread_flag = False
-live_data_buffer = []  
+live_data_buffer = []
 
 def detect_brainlink():
     ports = serial.tools.list_ports.comports()
-    brainlink_port = None
-
-    BRAINLINK_SERIALS = ("5C361634682F", "5C3616327E59")
-
-    for port in ports:
-        if (
-            getattr(port, "serial_number", None) in BRAINLINK_SERIALS
-        ):
-            brainlink_port = port.device
-            break
-
-    # Fallback: try by description or device name if not found
-    if not brainlink_port:
+    # If user-specific HWIDs are provided, use them first
+    if ALLOWED_HWIDS:
         for port in ports:
-            if any(id in port.description.lower() for id in ["BrainLink_Pro", "neurosky", "ftdi", "silabs", "ch340"]):
-                brainlink_port = port.device
-                break
-            if port.device.startswith(("/dev/tty.usbserial", "/dev/tty.usbmodem")):
-                brainlink_port = port.device
-                break
-
-    return brainlink_port
+            if hasattr(port, 'hwid') and any(hw in port.hwid for hw in ALLOWED_HWIDS):
+                return port.device
+    # Fallback to platform-specific detection
+    if platform.system() == 'Windows':
+        for port in ports:
+            if any(hw in port.hwid for hw in ["5C3616346838"]):  # default fallback ID
+                return port.device
+    elif platform.system() == 'Darwin':
+        for port in ports:
+            if any(id in port.description.lower() for id in ["brainlink", "neurosky", "ftdi", "silabs", "ch340"]):
+                return port.device
+            if port.device.startswith("/dev/tty.usbserial"):
+                return port.device
+            if port.device.startswith(("/dev/tty.usbmodem")):
+                return port.device
+    return None
 
 def onRaw(raw):
     global live_data_buffer
@@ -383,26 +381,28 @@ class MainWindow(QMainWindow):
         
         global SERIAL_PORT
         SERIAL_PORT = detect_brainlink()
-        if not SERIAL_PORT:
-            self.log_message("No device found!")
-            global stop_thread_flag
-            stop_thread_flag = True
-        
+        # Move device check after UI widgets are created
         self.status_label = QLabel("Not running yet.")
         self.status_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.status_label)
-        
+
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("#000")
         main_layout.addWidget(self.plot_widget, stretch=1)
         self.live_curve = self.plot_widget.plot([], [], pen=pg.mkPen('g', width=2))
-        
+
         # Log area to show process messages so user isn't clueless
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
         self.log_area.setFixedHeight(100)
         main_layout.addWidget(self.log_area)
-          # Update interval now 1 second to ease server load (or adjust as needed)
+
+        # Now check for device and log message if not found
+        if not SERIAL_PORT:
+            self.log_message("No device found!")
+            global stop_thread_flag
+            stop_thread_flag = True
+        
         self.live_timer = QTimer(self)
         self.live_timer.timeout.connect(self.update_live_plot)
         self.live_timer.start(1000)
@@ -412,9 +412,11 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.on_start_clicked)
         button_layout.addWidget(self.start_button)
         
-        self.diagnostics_button = QPushButton("Run Diagnostics")
-        self.diagnostics_button.clicked.connect(self.run_diagnostics)
-        button_layout.addWidget(self.diagnostics_button)
+        # Replace Diagnostics with Disconnect functionality
+        self.disconnect_button = QPushButton("Disconnect")
+        self.disconnect_button.clicked.connect(self.on_disconnect_clicked)
+        self.disconnect_button.setEnabled(False)
+        button_layout.addWidget(self.disconnect_button)
         
         self.exit_button = QPushButton("Exit")
         self.exit_button.clicked.connect(self.close)
@@ -437,6 +439,8 @@ class MainWindow(QMainWindow):
         
         # Process the data as before...
         data = np.array(live_data_buffer)
+        # Downsample from 512Hz to 256Hz
+        data = decimate(data, 2)
         fs = 256
         
         data_notched = notch_filter(data, fs, notch_freq=50.0, quality_factor=30.0)
@@ -493,7 +497,7 @@ class MainWindow(QMainWindow):
             self.log_message(f"Error sending data: {str(e)}")
     
     def on_start_clicked(self):
-        global BACKEND_URL, SERIAL_PORT
+        global BACKEND_URL, SERIAL_PORT, ALLOWED_HWIDS
         if self.radio_en.isChecked():
             BACKEND_URL = "https://en.mindspeller.com/api/cas/brainlink_data"
             login_url = "https://en.mindspeller.com/api/cas/token/login"
@@ -599,11 +603,43 @@ class MainWindow(QMainWindow):
             self.log_message("Login canceled.")
             return
         
+        # After successful login, derive API base (strip '/brainlink_data') and fetch user-specific HWIDs
+        api_base = BACKEND_URL.replace("/brainlink_data", "")
+        try:
+            hwids_url = f"{api_base}/users/hwids"
+            hwid_response = requests.get(
+                hwids_url,
+                headers = {"X-Authorization": f"Bearer {self.jwt_token}"},
+                timeout=5
+            )
+            if hwid_response.status_code == 200:
+                # Normalize HWID data to a list
+                raw_hwids = hwid_response.json().get("brainlink_hwid", [])
+                if isinstance(raw_hwids, str):
+                    ALLOWED_HWIDS = [raw_hwids]
+                elif isinstance(raw_hwids, list):
+                    ALLOWED_HWIDS = raw_hwids
+                else:
+                    ALLOWED_HWIDS = []
+                self.log_message(f"Fetched {len(ALLOWED_HWIDS)} allowed device IDs")
+            else:
+                self.log_message(f"Failed to fetch HWIDs ({hwid_response.status_code}); using default detection")
+        except Exception as e:
+            self.log_message(f"Error fetching HWIDs: {e}")
+
+        # Then detect BrainLink using fetched HWIDs
+        SERIAL_PORT = detect_brainlink()
+        if not SERIAL_PORT:
+            self.log_message("No allowed device found!")
+            return
+        
         self.serial_obj = CushySerial(SERIAL_PORT, SERIAL_BAUD)
         self.log_message("Starting BrainLink thread...")
         self.brainlink_thread = threading.Thread(target=run_brainlink, args=(self.serial_obj,))
         self.brainlink_thread.start()
-        self.start_button.setEnabled(False)        
+        self.start_button.setEnabled(False)
+        # Enable Disconnect once started
+        self.disconnect_button.setEnabled(True)
         self.log_message(f"Running... Sending data to {BACKEND_URL}")
     
     def closeEvent(self, event):
@@ -615,242 +651,23 @@ class MainWindow(QMainWindow):
             self.brainlink_thread.join()
         event.accept()
     
+    def on_disconnect_clicked(self):
+        """Disconnect from the BrainLink device and stop the thread."""
+        global stop_thread_flag
+        stop_thread_flag = True
+        # Close serial connection
+        if self.serial_obj and self.serial_obj.is_open:
+            self.serial_obj.close()
+        # Wait for thread to exit
+        if self.brainlink_thread and self.brainlink_thread.is_alive():
+            self.brainlink_thread.join()
+        self.log_message("Disconnected from BrainLink device.")
+        # Restore UI state
+        self.start_button.setEnabled(True)
+        self.disconnect_button.setEnabled(False)
+
     def run_diagnostics(self):
-        """Run diagnostic tests and display results in the log area."""
-        self.log_message("Starting diagnostic tests...")
-        
-        # Create a string buffer to capture diagnostic output
-        diagnostic_results = []
-        
-        def add_result(message):
-            self.log_message(message)
-            diagnostic_results.append(message)
-        
-        def print_section(title):
-            separator = "=" * 60
-            add_result("\n" + separator)
-            add_result(f" {title} ".center(58, "-"))
-            add_result(separator)
-        
-        # Python Environment
-        print_section("Python Environment")
-        add_result(f"Python Version: {sys.version}")
-        add_result(f"Platform: {platform.platform()}")
-        add_result(f"Implementation: {platform.python_implementation()}")
-        
-        # Dependencies
-        print_section("Dependencies")
-        required_packages = [
-            "requests",
-            "serial",
-            "cushy_serial",
-            "numpy",
-            "scipy",
-            "pyqtgraph",
-            "PySide6"
-        ]
-        
-        for package in required_packages:
-            try:
-                module = __import__(package)
-                if hasattr(module, "__version__"):
-                    version = module.__version__
-                elif hasattr(module, "version"):
-                    version = module.version
-                else:
-                    version = "Unknown"
-                add_result(f"{package} - Version: {version} - OK")
-            except ImportError:
-                add_result(f"{package} - NOT FOUND!")
-          # Network Connectivity
-        print_section("Network Connectivity")
-        
-        # Check and display proxy settings
-        try:
-            if platform.system() == 'Windows':
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
-                              r'Software\Microsoft\Windows\CurrentVersion\Internet Settings') as key:
-                    proxy_enabled = winreg.QueryValueEx(key, 'ProxyEnable')[0]
-                    if proxy_enabled:
-                        proxy_server = winreg.QueryValueEx(key, 'ProxyServer')[0]
-                        add_result(f"System Proxy: ENABLED - {proxy_server}")
-                        try:
-                            proxy_bypass = winreg.QueryValueEx(key, 'ProxyOverride')[0]
-                            add_result(f"Proxy Bypass: {proxy_bypass}")
-                        except:
-                            add_result("No proxy bypass settings found")
-                    else:
-                        add_result("System Proxy: DISABLED")
-            elif platform.system() == 'Darwin':
-                http_proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY')
-                https_proxy = os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')
-                if http_proxy or https_proxy:
-                    if http_proxy:
-                        add_result(f"HTTP proxy detected: {http_proxy}")
-                    if https_proxy:
-                        add_result(f"HTTPS proxy detected: {https_proxy}")
-                else:
-                    add_result("No proxy settings detected on macOS")
-        except Exception as e:
-            add_result(f"Error reading proxy settings: {str(e)}")
-            
-        # Test connections to endpoints
-        test_urls = [
-            "https://en.mindspeller.com/api/cas/token/login",
-            "https://nl.mindspeller.com/api/cas/token/login",
-            "http://127.0.0.1:5000/api/cas/token/login"
-        ]
-        
-        for url in test_urls:
-            add_result(f"\nTesting connection to: {url}")
-            try:
-                response = requests.head(url, timeout=5, verify=True)
-                add_result(f"  HEAD request Status: {response.status_code}")
-                add_result(f"  SSL/TLS Verification: Passed")
-            except requests.exceptions.SSLError as e:
-                add_result(f"  SSL/TLS Error: {str(e)}")
-                try:
-                    response = requests.head(url, timeout=5, verify=False)
-                    add_result(f"  HEAD request without SSL verification Status: {response.status_code}")
-                    add_result(f"  SSL/TLS Verification: Failed but connection works without it")
-                except Exception as e2:
-                    add_result(f"  Connection failed even without SSL verification: {str(e2)}")
-            except requests.exceptions.ConnectionError as e:
-                add_result(f"  Connection Error: {str(e)}")
-            except Exception as e:
-                add_result(f"  Other Error: {str(e)}")
-        
-        # SSL/TLS Configuration
-        print_section("SSL/TLS Configuration")
-        add_result(f"OpenSSL Version: {ssl.OPENSSL_VERSION}")
-        
-        # Check support for various TLS protocols
-        protocols = [
-            ssl.PROTOCOL_TLSv1,
-            ssl.PROTOCOL_TLSv1_1,
-            ssl.PROTOCOL_TLSv1_2,
-            ssl.PROTOCOL_TLS,
-        ]
-        
-        for protocol in protocols:
-            try:
-                ssl.SSLContext(protocol)
-                add_result(f"Protocol {protocol} is supported")
-            except Exception as e:
-                add_result(f"Protocol {protocol} is not supported: {e}")
-        
-        # Serial Ports
-        print_section("Serial Ports")
-        ports = serial.tools.list_ports.comports()
-        
-        if not ports:
-            add_result("No serial ports detected!")
-        else:
-            add_result("Available serial ports:")
-            for port in ports:
-                add_result(f"  - {port.device}")
-                add_result(f"    Description: {port.description}")
-                add_result(f"    HWID: {port.hwid}")
-                
-        # Check specifically for BrainLink
-        brainlink_port = None
-        for port in ports:
-            if "5C361634682F" in port.hwid:
-                brainlink_port = port.device
-                break
-        
-        if brainlink_port:
-            add_result(f"\nBrainLink device detected on port: {brainlink_port}")
-        else:
-            add_result("\nNo BrainLink device detected!")
-        
-        # Login Test (optional)
-        result = QMessageBox.question(
-            self,
-            "Login Test",
-            "Do you want to test login credentials?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if result == QMessageBox.Yes:
-            print_section("Login Test")
-            username, ok1 = QInputDialog.getText(self, "Login Test", "Enter username:")
-            if ok1:
-                password, ok2 = QInputDialog.getText(self, "Login Test", "Enter password:", QLineEdit.Password)
-                if ok2:
-                    login_urls = [
-                        "https://en.mindspeller.com/api/cas/token/login",
-                        "https://nl.mindspeller.com/api/cas/token/login"
-                    ]
-                    
-                    for login_url in login_urls:
-                        add_result(f"\nTesting login at: {login_url}")
-                        login_payload = {"username": username, "password": password}
-                        
-                        try:
-                            # With SSL verification
-                            add_result("Attempting with SSL verification...")
-                            response = requests.post(
-                                login_url,
-                                json=login_payload,
-                                headers={"Content-Type": "application/json"},
-                                timeout=5,
-                                verify=True
-                            )
-                            add_result(f"Status: {response.status_code}")
-                            if hasattr(response, 'text'):
-                                add_result(f"Response: {response.text}")
-                        except Exception as e:
-                            add_result(f"Error with SSL verification: {str(e)}")
-                        
-                        try:
-                            # Without SSL verification
-                            add_result("Attempting without SSL verification...")
-                            response = requests.post(
-                                login_url,
-                                json=login_payload,
-                                headers={"Content-Type": "application/json"},
-                                timeout=5,
-                                verify=False
-                            )
-                            add_result(f"Status: {response.status_code}")
-                            if hasattr(response, 'text'):
-                                add_result(f"Response: {response.text}")
-                        except Exception as e:
-                            add_result(f"Error without SSL verification: {str(e)}")
-                        
-                        try:
-                            # With form data instead of JSON
-                            add_result("Attempting with form data...")
-                            response = requests.post(
-                                login_url,
-                                data=login_payload,
-                                timeout=5,
-                                verify=False
-                            )
-                            add_result(f"Status: {response.status_code}")
-                            if hasattr(response, 'text'):
-                                add_result(f"Response: {response.text}")
-                        except Exception as e:
-                            add_result(f"Error with form data: {str(e)}")
-        
-        # Save results to file
-        print_section("Conclusion")
-        add_result("Diagnostic complete!")
-        
-        output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'diagnostic_results.txt')
-        with open(output_path, 'w') as f:
-            f.write("\n".join(diagnostic_results))
-        
-        add_result(f"Results saved to: {output_path}")
-        
-        # Show completion message
-        QMessageBox.information(
-            self,
-            "Diagnostics Complete",
-            f"Diagnostic tests completed successfully.\nResults have been saved to:\n{output_path}"
-        )
+        pass  # Placeholder for diagnostics function
 
 def main():
     app = QApplication(sys.argv)
@@ -876,3 +693,4 @@ if __name__ == "__main__":
 # - It provides more stable measurements by averaging over a longer period
 # - It still captures the relevant frequency information since you're using proper windowing and FFT techniques
 # - If you needed higher temporal resolution, you could decrease the timer interval, but remember this would increase the number of API calls to your backend.
+# research about pink noise that shows the contribution of theta when the human brain is at a fatigue state at a certain point of time in the day.

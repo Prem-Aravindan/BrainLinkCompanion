@@ -40,8 +40,12 @@ const LoginScreen = ({ onLogin }) => {
       // Attempt login
       const result = await ApiService.login(username, password);
       
-      if (result.success && result.user) {
-        onLogin(result.user);
+      console.log('Login result:', result);
+      
+      if (result.success && (result.user || result.token)) {
+        // Pass user data if available, otherwise pass an empty object with token info
+        const userData = result.user || { token: result.token, loginTime: new Date().toISOString() };
+        onLogin(userData);
       } else {
         Alert.alert('Login Failed', result.error || 'No user info returned');
       }

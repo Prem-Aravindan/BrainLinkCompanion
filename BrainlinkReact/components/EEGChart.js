@@ -1,6 +1,5 @@
 import React from 'react';
 import { View, Text, StyleSheet, Dimensions } from 'react-native';
-import { VictoryChart, VictoryLine, VictoryAxis } from 'victory-native';
 import { COLORS } from '../constants';
 
 const screenWidth = Dimensions.get('window').width;
@@ -12,51 +11,39 @@ const EEGChart = ({
   showTitle = true,
   color = COLORS.primary 
 }) => {
-  const getChartData = () => {
+  const getLatestValues = () => {
     if (data.length === 0) {
-      // Return empty chart data
-      return Array.from({ length: 50 }, (_, i) => ({ x: i, y: 0 }));
+      return [];
     }
+    // Show last 10 values
+    return data.slice(-10);
+  };
 
-    // Take last 50 data points for display
-    const displayData = data.slice(-50);
-    return displayData.map((value, index) => ({ x: index, y: value }));
+  const getAverageValue = () => {
+    if (data.length === 0) return 0;
+    const recent = data.slice(-20);
+    return (recent.reduce((sum, val) => sum + val, 0) / recent.length).toFixed(2);
   };
 
   return (
     <View style={styles.container}>
       {showTitle && <Text style={styles.title}>{title}</Text>}
-      <VictoryChart
-        width={screenWidth - 40}
-        height={height}
-        padding={{ left: 50, top: 10, right: 20, bottom: 30 }}
-      >
-        <VictoryAxis 
-          dependentAxis
-          style={{
-            axis: { stroke: COLORS.lightGray },
-            tickLabels: { fontSize: 10, fill: COLORS.text },
-            grid: { stroke: COLORS.lightGray, strokeOpacity: 0.3 }
-          }}
-        />
-        <VictoryAxis
-          style={{
-            axis: { stroke: COLORS.lightGray },
-            tickLabels: { fontSize: 10, fill: COLORS.text },
-            grid: { stroke: COLORS.lightGray, strokeOpacity: 0.3 }
-          }}
-        />
-        <VictoryLine
-          data={getChartData()}
-          style={{
-            data: { stroke: color, strokeWidth: 2 }
-          }}
-          animate={{
-            duration: 100,
-            onLoad: { duration: 500 }
-          }}
-        />
-      </VictoryChart>
+      
+      <View style={styles.valueContainer}>
+        <Text style={styles.averageLabel}>Current Average:</Text>
+        <Text style={[styles.averageValue, { color }]}>{getAverageValue()}</Text>
+      </View>
+      
+      <View style={styles.valuesGrid}>
+        <Text style={styles.valuesLabel}>Recent Values:</Text>
+        <View style={styles.valuesRow}>
+          {getLatestValues().map((value, index) => (
+            <Text key={index} style={styles.valueItem}>
+              {typeof value === 'number' ? value.toFixed(1) : value}
+            </Text>
+          ))}
+        </View>
+      </View>
     </View>
   );
 };
@@ -80,9 +67,43 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     textAlign: 'center',
   },
-  chart: {
-    marginVertical: 8,
-    borderRadius: 16,
+  valueContainer: {
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  averageLabel: {
+    fontSize: 14,
+    color: COLORS.text,
+    marginBottom: 5,
+  },
+  averageValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  valuesGrid: {
+    marginTop: 10,
+  },
+  valuesLabel: {
+    fontSize: 12,
+    color: COLORS.text,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  valuesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  valueItem: {
+    backgroundColor: COLORS.lightGray,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    fontSize: 12,
+    color: COLORS.text,
+    minWidth: 45,
+    textAlign: 'center',
   },
 });
 

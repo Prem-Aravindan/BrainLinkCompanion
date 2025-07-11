@@ -2,17 +2,17 @@
 export const API_CONFIG = {
   ENDPOINTS: {
     EN_PROD: 'https://en.mindspeller.com/api/cas',
-    NL_PROD: 'https://nl.mindspeller.com/api/cas',
+    NL_PROD: 'https://stg-nl.mindspell.be/api/cas',
     LOCAL: 'http://10.0.0.117:5000/api/cas',
   },
   DATA_URLS: {
     EN_PROD: 'https://en.mindspeller.com/api/cas/brainlink_data',
-    NL_PROD: 'https://nl.mindspeller.com/api/cas/brainlink_data',
+    NL_PROD: 'https://stg-nl.mindspell.be/api/cas/brainlink_data',
     LOCAL: 'http://10.0.0.117:5000/api/cas/brainlink_data',
   },
   LOGIN_URLS: {
     EN_PROD: 'https://en.mindspeller.com/api/cas/token/login',
-    NL_PROD: 'https://nl.mindspeller.com/api/cas/token/login',
+    NL_PROD: 'https://stg-nl.mindspell.be/api/cas/token/login',
     LOCAL: 'http://10.0.0.117:5000/api/cas/token/login',
   },
 };

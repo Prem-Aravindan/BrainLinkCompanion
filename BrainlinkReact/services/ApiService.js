@@ -140,9 +140,14 @@ class ApiService {
         console.warn('⚠️ No x-jwt-access-token in response:', Object.keys(response));
       }
 
+      // Extract user info from response - check multiple possible fields
+      const userData = response.user || response.userData || response.userInfo || response;
+      
+      console.log('👤 User data extracted:', userData);
+
       return {
         success: true,
-        user: response.user,
+        user: userData,
         token: response['x-jwt-access-token'],
         response: response, // Include full response for debugging
       };

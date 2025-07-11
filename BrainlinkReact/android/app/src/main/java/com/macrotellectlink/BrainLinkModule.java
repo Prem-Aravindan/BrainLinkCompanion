@@ -15,6 +15,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 // MacrotellectLink SDK imports - using actual package names
 import com.boby.bluetoothconnect.LinkManager;
+import com.boby.bluetoothconnect.classic.manage.BlueManager;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -34,6 +35,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     
     private ReactApplicationContext reactContext;
     private LinkManager linkManager;
+    private BlueManager blueManager;
     private boolean isInitialized = false;
     
     public BrainLinkModule(ReactApplicationContext reactContext) {
@@ -71,23 +73,34 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
                 return;
             }
             
-            // Create LinkManager instance with required context
+            // Try BlueManager instead of LinkManager since LinkManager constructor is private
             try {
-                linkManager = new LinkManager(context);
-                isInitialized = true;
-                Log.d(TAG, "MacrotellectLink SDK initialized successfully");
+                // BlueManager seems to be the main entry point
+                blueManager = new BlueManager(context);
                 
-                WritableMap result = Arguments.createMap();
-                result.putBoolean("success", true);
-                result.putString("message", "MacrotellectLink SDK initialized");
-                result.putString("package", "com.boby.bluetoothconnect");
-                promise.resolve(result);
+                if (blueManager != null) {
+                    isInitialized = true;
+                    Log.d(TAG, "MacrotellectLink SDK initialized successfully via BlueManager");
+                    
+                    WritableMap result = Arguments.createMap();
+                    result.putBoolean("success", true);
+                    result.putString("message", "MacrotellectLink SDK initialized via BlueManager");
+                    result.putString("package", "com.boby.bluetoothconnect");
+                    result.putString("manager", "BlueManager");
+                    promise.resolve(result);
+                } else {
+                    promise.reject("BLUEMANAGER_NULL", "BlueManager instance is null");
+                }
                 
-            } catch (Exception linkManagerException) {
-                Log.e(TAG, "Failed to create LinkManager", linkManagerException);
-                promise.reject("LINKMANAGER_ERROR", "Failed to create LinkManager: " + linkManagerException.getMessage());
+            } catch (Exception blueManagerException) {
+                Log.e(TAG, "Failed to create BlueManager", blueManagerException);
+                
+                // Fallback: Try to discover what's available
+                LinkManagerTest.discoverAPI(context);
+                
+                promise.reject("BLUEMANAGER_ERROR", "Failed to create BlueManager: " + blueManagerException.getMessage() + ". Check logs for API discovery.");
             }
-            
+                
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize MacrotellectLink SDK", e);
             promise.reject("INIT_ERROR", "Failed to initialize MacrotellectLink SDK: " + e.getMessage());
@@ -100,7 +113,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void startScan(Promise promise) {
         try {
-            if (!isInitialized || linkManager == null) {
+            if (!isInitialized || blueManager == null) {
                 promise.reject("NOT_INITIALIZED", "SDK not initialized");
                 return;
             }
@@ -108,7 +121,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "Starting device scan...");
             
             // For now, simulate scan start
-            // Real implementation would call linkManager.startScan() with proper callbacks
+            // Real implementation would call blueManager.startScan() with proper callbacks
             
             Log.d(TAG, "Device scan started successfully");
             promise.resolve(true);
@@ -125,7 +138,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void stopScan(Promise promise) {
         try {
-            if (linkManager != null) {
+            if (blueManager != null) {
                 Log.d(TAG, "Device scan stopped");
                 promise.resolve(true);
             } else {
@@ -143,7 +156,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void disconnect(Promise promise) {
         try {
-            if (linkManager != null) {
+            if (blueManager != null) {
                 Log.d(TAG, "Disconnected from all devices");
                 promise.resolve(true);
             } else {
@@ -161,7 +174,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getConnectedDevices(Promise promise) {
         try {
-            if (linkManager != null) {
+            if (blueManager != null) {
                 promise.resolve(Arguments.createArray());
             } else {
                 promise.reject("NOT_INITIALIZED", "SDK not initialized");

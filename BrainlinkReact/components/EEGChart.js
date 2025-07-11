@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Dimensions } from 'react-native';
-import { LineChart } from 'react-native-chart-kit';
+import { VictoryChart, VictoryLine, VictoryAxis } from 'victory-native';
 import { COLORS } from '../constants';
 
 const screenWidth = Dimensions.get('window').width;
@@ -15,65 +15,48 @@ const EEGChart = ({
   const getChartData = () => {
     if (data.length === 0) {
       // Return empty chart data
-      return {
-        labels: Array.from({ length: 50 }, () => ''),
-        datasets: [{
-          data: Array.from({ length: 50 }, () => 0),
-          color: (opacity = 1) => color,
-          strokeWidth: 2,
-        }],
-      };
+      return Array.from({ length: 50 }, (_, i) => ({ x: i, y: 0 }));
     }
 
     // Take last 50 data points for display
     const displayData = data.slice(-50);
-    const labels = Array.from({ length: displayData.length }, () => '');
-
-    return {
-      labels,
-      datasets: [{
-        data: displayData,
-        color: (opacity = 1) => color,
-        strokeWidth: 2,
-      }],
-    };
-  };
-
-  const chartConfig = {
-    backgroundColor: COLORS.white,
-    backgroundGradientFrom: COLORS.white,
-    backgroundGradientTo: COLORS.white,
-    decimalPlaces: 2,
-    color: (opacity = 1) => color,
-    labelColor: (opacity = 1) => COLORS.text,
-    style: {
-      borderRadius: 16,
-    },
-    propsForDots: {
-      r: "0", // Hide dots for cleaner line
-    },
-    propsForBackgroundLines: {
-      strokeWidth: 1,
-      stroke: COLORS.lightGray,
-      strokeOpacity: 0.3,
-    },
+    return displayData.map((value, index) => ({ x: index, y: value }));
   };
 
   return (
     <View style={styles.container}>
       {showTitle && <Text style={styles.title}>{title}</Text>}
-      <LineChart
-        data={getChartData()}
+      <VictoryChart
         width={screenWidth - 40}
         height={height}
-        chartConfig={chartConfig}
-        bezier={false} // Disable bezier for real-time data
-        style={styles.chart}
-        withHorizontalLabels={false}
-        withVerticalLabels={false}
-        withInnerLines={true}
-        withOuterLines={false}
-      />
+        padding={{ left: 50, top: 10, right: 20, bottom: 30 }}
+      >
+        <VictoryAxis 
+          dependentAxis
+          style={{
+            axis: { stroke: COLORS.lightGray },
+            tickLabels: { fontSize: 10, fill: COLORS.text },
+            grid: { stroke: COLORS.lightGray, strokeOpacity: 0.3 }
+          }}
+        />
+        <VictoryAxis
+          style={{
+            axis: { stroke: COLORS.lightGray },
+            tickLabels: { fontSize: 10, fill: COLORS.text },
+            grid: { stroke: COLORS.lightGray, strokeOpacity: 0.3 }
+          }}
+        />
+        <VictoryLine
+          data={getChartData()}
+          style={{
+            data: { stroke: color, strokeWidth: 2 }
+          }}
+          animate={{
+            duration: 100,
+            onLoad: { duration: 500 }
+          }}
+        />
+      </VictoryChart>
     </View>
   );
 };

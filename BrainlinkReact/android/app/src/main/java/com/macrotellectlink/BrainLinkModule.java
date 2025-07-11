@@ -68,8 +68,8 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
             
             Context context = reactContext.getApplicationContext();
             
-            // Create LinkManager instance
-            linkManager = new LinkManager();
+            // Create LinkManager instance with required context
+            linkManager = new LinkManager(context);
             
             if (linkManager != null) {
                 isInitialized = true;

@@ -42,12 +42,16 @@ const LoginScreen = ({ onLogin }) => {
       
       console.log('Login result:', result);
       
-      if (result.success && (result.user || result.token)) {
-        // Pass user data if available, otherwise pass an empty object with token info
-        const userData = result.user || { token: result.token, loginTime: new Date().toISOString() };
+      if (result.success && result.token) {
+        // Login successful - we have a token
+        const userData = result.user || { 
+          token: result.token, 
+          loginTime: new Date().toISOString(),
+          username: username
+        };
         onLogin(userData);
       } else {
-        Alert.alert('Login Failed', result.error || 'No user info returned');
+        Alert.alert('Login Failed', result.error || 'Login failed - no token received');
       }
     } catch (error) {
       Alert.alert('Login Failed', error.message);

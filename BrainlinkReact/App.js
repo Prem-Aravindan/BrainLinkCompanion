@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, SafeAreaView, View, ActivityIndicator, Text } from 'react-native';
 import LoginScreen from './screens/LoginScreen';
-import DashboardScreen from './screens/DashboardScreen';
+import { MacrotellectLinkDashboard } from './screens/MacrotellectLinkDashboard';
 import ApiService from './services/ApiService';
+import MacrotellectLinkService from './services/MacrotellectLinkService';
 import { COLORS } from './constants';
 
 export default function App() {
@@ -29,9 +30,22 @@ export default function App() {
     }
   };
 
-  const handleLogin = (userData) => {
+  const handleLogin = async (userData) => {
     setUser(userData);
     setIsLoggedIn(true);
+    
+    // Initialize MacrotellectLink SDK after successful login
+    try {
+      console.log('🔐 User logged in, initializing MacrotellectLink SDK...');
+      if (MacrotellectLinkService.isAvailable()) {
+        await MacrotellectLinkService.initialize();
+        console.log('✅ MacrotellectLink SDK initialized successfully');
+      } else {
+        console.warn('⚠️ MacrotellectLink SDK not available on this platform');
+      }
+    } catch (error) {
+      console.error('Error initializing MacrotellectLink SDK after login:', error);
+    }
   };
 
   const handleLogout = async () => {
@@ -61,7 +75,7 @@ export default function App() {
       {!isLoggedIn ? (
         <LoginScreen onLogin={handleLogin} />
       ) : (
-        <DashboardScreen 
+        <MacrotellectLinkDashboard 
           user={user}
           onLogout={handleLogout}
         />

@@ -1,4 +1,4 @@
-package com.mindspellerbv.BrainlinkReact
+package com.premjpa.BrainlinkReact
 
 import android.os.Build
 import android.os.Bundle

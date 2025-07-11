@@ -131,7 +131,7 @@ class ApiService {
 
       console.log('✅ Login response received:', response);
 
-      // Extract JWT token from response (matches Python: data.get("x-jwt-access-token"))
+      // Extract JWT token from response
       if (response['x-jwt-access-token']) {
         await this.storeToken(response['x-jwt-access-token']);
         this.setToken(response['x-jwt-access-token']);
@@ -140,15 +140,23 @@ class ApiService {
         console.warn('⚠️ No x-jwt-access-token in response:', Object.keys(response));
       }
 
-      // Extract user info from response - check multiple possible fields
-      const userData = response.user || response.userData || response.userInfo || response;
+      // Since backend doesn't return user data directly, create user object from response
+      // The actual user info is embedded in the JWT token claims
+      const userData = {
+        loggedIn: response.login || false,
+        token: response['x-jwt-access-token'],
+        refreshToken: response['x-jwt-refresh-token'],
+        loginTime: new Date().toISOString(),
+        // Additional user info would be decoded from JWT if needed
+      };
       
-      console.log('👤 User data extracted:', userData);
+      console.log('👤 User data created:', userData);
 
       return {
         success: true,
         user: userData,
         token: response['x-jwt-access-token'],
+        refreshToken: response['x-jwt-refresh-token'],
         response: response, // Include full response for debugging
       };
     } catch (error) {

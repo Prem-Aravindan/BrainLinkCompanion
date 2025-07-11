@@ -1,4 +1,6 @@
-package com.brainlinkreact;
+package com.macrotellectlink;
+
+import androidx.annotation.NonNull;
 
 import com.facebook.react.ReactPackage;
 import com.facebook.react.bridge.NativeModule;
@@ -9,17 +11,22 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * React Native Package for MacrotellectLink SDK
+ */
 public class BrainLinkPackage implements ReactPackage {
-
+    
+    @NonNull
     @Override
-    public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
+    public List<NativeModule> createNativeModules(@NonNull ReactApplicationContext reactContext) {
         List<NativeModule> modules = new ArrayList<>();
-        modules.add(BrainLinkModuleFactory.createModule(reactContext));
+        modules.add(new BrainLinkModule(reactContext));
         return modules;
     }
-
+    
+    @NonNull
     @Override
-    public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
+    public List<ViewManager> createViewManagers(@NonNull ReactApplicationContext reactContext) {
         return Collections.emptyList();
     }
 }

@@ -1,4 +1,4 @@
-package com.mindspellerbv.BrainlinkReact
+package com.premjpa.BrainlinkReact
 
 import android.app.Application
 import android.content.res.Configuration
@@ -15,7 +15,7 @@ import com.facebook.soloader.SoLoader
 
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ReactNativeHostWrapper
-import com.brainlinkreact.BrainLinkPackage
+import com.macrotellectlink.BrainLinkPackage
 
 class MainApplication : Application(), ReactApplication {
 

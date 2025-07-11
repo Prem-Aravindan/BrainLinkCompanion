@@ -5,7 +5,7 @@ import { COLORS } from '../constants';
 const BandPowerBar = ({ 
   label, 
   value, 
-  maxValue = 1, 
+  maxValue = 100, // Changed from 1 to 100 for percentage values
   color = COLORS.primary,
   unit = '%' 
 }) => {
@@ -22,7 +22,7 @@ const BandPowerBar = ({
       <View style={styles.labelContainer}>
         <Text style={styles.label}>{label}</Text>
         <Text style={styles.value}>
-          {(value * 100).toFixed(1)}{unit}
+          {value.toFixed(1)}{unit}
         </Text>
       </View>
       <View style={styles.barContainer}>

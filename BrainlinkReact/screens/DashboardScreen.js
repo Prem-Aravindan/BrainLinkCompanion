@@ -36,10 +36,21 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
   });
   const [isRecording, setIsRecording] = useState(false);
   const [showDeviceList, setShowDeviceList] = useState(false);
+  const [authorizedDevices, setAuthorizedDevices] = useState([]);
 
   useEffect(() => {
     // Initialize Bluetooth service
     BluetoothService.initialize();
+    
+    // Get authorized devices list
+    const updateAuthorizedDevices = () => {
+      const hwids = BluetoothService.getAuthorizedHWIDs();
+      setAuthorizedDevices(hwids);
+      console.log('📱 Authorized devices updated in UI:', hwids);
+    };
+    
+    // Initial load
+    updateAuthorizedDevices();
     
     // Set up data listener
     const unsubscribe = BluetoothService.onDataReceived((data) => {
@@ -51,6 +62,17 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
       unsubscribe && unsubscribe();
     };
   }, []);
+
+  // Update authorized devices when user changes (e.g., after login)
+  useEffect(() => {
+    if (user && user.token) {
+      setTimeout(() => {
+        const hwids = BluetoothService.getAuthorizedHWIDs();
+        setAuthorizedDevices(hwids);
+        console.log('📱 Authorized devices refreshed after user change:', hwids);
+      }, 1000); // Small delay to ensure API call completes
+    }
+  }, [user]);
 
   const handleEEGData = (rawData) => {
     try {
@@ -79,7 +101,17 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
   const handleDeviceSelected = (device) => {
     setIsConnected(true);
     setDeviceName(device.name);
-    Alert.alert('Success', `Connected to ${device.name}`);
+    
+    // Log device details for debugging
+    console.log('📱 Device selected:', device.name);
+    console.log('📱 Device HWID:', device.hwid || 'Unknown');
+    console.log('📱 Authorized HWIDs:', authorizedDevices);
+    
+    const deviceMessage = device.hwid ? 
+      `Connected to ${device.name}\nHWID: ${device.hwid}` : 
+      `Connected to ${device.name}`;
+    
+    Alert.alert('Success', deviceMessage);
   };
 
   const disconnectDevice = async () => {
@@ -183,7 +215,35 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
           visible={showDeviceList}
           onClose={() => setShowDeviceList(false)}
           onDeviceSelected={handleDeviceSelected}
-        />{/* EEG Chart */}
+        />
+
+        {/* Authorized Devices Section */}
+        <View style={styles.statusCard}>
+          <Text style={styles.cardTitle}>Device Authorization</Text>
+          {authorizedDevices.length > 0 ? (
+            <View>
+              <Text style={styles.statusText}>
+                Authorized BrainLink devices ({authorizedDevices.length}):
+              </Text>
+              {authorizedDevices.map((hwid, index) => (
+                <View key={index} style={styles.deviceItem}>
+                  <View style={[styles.statusIndicator, { backgroundColor: COLORS.success }]} />
+                  <Text style={styles.deviceHwid}>HWID: {hwid}</Text>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View>
+              <View style={styles.statusRow}>
+                <View style={[styles.statusIndicator, { backgroundColor: COLORS.warning }]} />
+                <Text style={styles.statusText}>No authorized devices found</Text>
+              </View>
+              <Text style={styles.instructionText}>
+                Contact your administrator to authorize BrainLink devices for your account.
+              </Text>
+            </View>
+          )}
+        </View>{/* EEG Chart */}
         {isConnected && (
           <EEGChart 
             data={eegData}
@@ -338,6 +398,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.text,
     lineHeight: 20,
+  },
+  deviceItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    marginLeft: 10,
+  },
+  deviceHwid: {
+    fontSize: 14,
+    color: COLORS.text,
+    fontFamily: 'monospace',
   },
 });
 

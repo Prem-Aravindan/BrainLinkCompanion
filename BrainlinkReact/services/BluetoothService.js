@@ -122,13 +122,18 @@ class BluetoothService {
               devices[existingIndex] = device;
             } else {
               // Add HWID to device info for display
-              const hwid = this.extractHWIDFromManufacturerData(device.manufacturerData);
+              const hwid = this.extractHWIDFromDevice(device);
               devices.push({
                 ...device,
-                hwid: hwid || 'Unknown'
+                hwid: hwid || 'Unknown',
+                authorized: true
               });
               console.log('Found authorized BrainLink device:', device.name, 'HWID:', hwid);
             }
+          } else if (this.isBrainLinkDevice(device)) {
+            // Log unauthorized BrainLink devices for debugging
+            const hwid = this.extractHWIDFromDevice(device);
+            console.log('Found unauthorized BrainLink device:', device.name, 'HWID:', hwid);
           }
         }
       });
@@ -141,6 +146,41 @@ class BluetoothService {
     if (this.scanSubscription && this.manager) {
       this.manager.stopDeviceScan();
       this.scanSubscription = null;
+    }
+  }
+
+  /**
+   * Get paired devices (for DeviceListModal compatibility)
+   * Note: BLE doesn't have a "paired devices" concept like Classic Bluetooth,
+   * so we return an empty array and rely on discovery
+   */
+  async getPairedDevices() {
+    console.log('📱 Getting paired devices (BLE has no paired concept, returning empty array)');
+    return [];
+  }
+
+  /**
+   * Start device discovery (for DeviceListModal compatibility)
+   * This wraps our existing scanForDevices method
+   */
+  async startDiscovery() {
+    console.log('📱 Starting device discovery...');
+    try {
+      // Ensure Bluetooth is initialized first
+      if (!this.isInitialized) {
+        console.log('📱 Bluetooth not initialized, initializing now...');
+        const success = await this.initialize();
+        if (!success) {
+          throw new Error('Failed to initialize Bluetooth');
+        }
+      }
+
+      const devices = await this.scanForDevices();
+      console.log(`📱 Found ${devices.length} authorized BrainLink devices`);
+      return devices;
+    } catch (error) {
+      console.error('📱 Device discovery failed:', error);
+      throw error;
     }
   }
 
@@ -159,6 +199,15 @@ class BluetoothService {
    */
   async connectToDevice(deviceId = null) {
     try {
+      // Ensure Bluetooth is initialized first
+      if (!this.isInitialized) {
+        console.log('📱 Bluetooth not initialized for connection, initializing now...');
+        const success = await this.initialize();
+        if (!success) {
+          throw new Error('Failed to initialize Bluetooth for connection');
+        }
+      }
+
       if (!this.manager) {
         throw new Error('Bluetooth manager not initialized');
       }
@@ -199,6 +248,7 @@ class BluetoothService {
       // Notify connection listeners
       this.notifyConnectionListeners(true, connectedDevice);
 
+      console.log('Successfully connected to:', targetDevice.name);
       return true;
     } catch (error) {
       console.error('Connection failed:', error);
@@ -408,7 +458,8 @@ class BluetoothService {
 
       const result = await ApiService.getUserDevices();
       if (result.success) {
-        this.authorizedHWIDs = result.devices.map(device => device.hwid);
+        // result.devices is already an array of HWID strings
+        this.authorizedHWIDs = result.devices || [];
         console.log('Authorized HWIDs:', this.authorizedHWIDs);
         return true;
       } else {
@@ -455,19 +506,118 @@ class BluetoothService {
     try {
       if (this.authorizedHWIDs.length === 0) {
         // If no authorization list, allow any BrainLink device for testing
+        console.log('📱 No authorization list, allowing any BrainLink device for testing');
         return this.isBrainLinkDevice(device);
       }
 
-      // Extract HWID from manufacturer data
-      const hwid = this.extractHWIDFromManufacturerData(device.manufacturerData);
-      if (!hwid) return false;
+      // Extract HWID from device (could be from manufacturer data or MAC address)
+      let deviceHwid = this.extractHWIDFromDevice(device);
+      if (!deviceHwid) {
+        console.log('📱 Could not extract HWID from device:', device.name);
+        return false;
+      }
 
-      // Check if HWID is in authorized list
-      return this.authorizedHWIDs.includes(hwid);
+      console.log('📱 Device HWID extracted:', deviceHwid);
+      console.log('📱 Authorized HWIDs:', this.authorizedHWIDs);
+
+      // Check if HWID is in authorized list (direct match first)
+      if (this.authorizedHWIDs.includes(deviceHwid)) {
+        console.log('📱 Direct HWID match found');
+        return true;
+      }
+
+      // Handle MAC address to HWID conversion (CC -> 5C prefix issue)
+      // MAC: CC:34:16:34:69:38 -> HWID: 5C3616346938
+      const matchFound = this.authorizedHWIDs.some(authorizedHwid => {
+        const result = this.compareHWIDsWithConversion(deviceHwid, authorizedHwid);
+        if (result) {
+          console.log(`📱 HWID match found: ${deviceHwid} matches ${authorizedHwid}`);
+        }
+        return result;
+      });
+
+      if (!matchFound) {
+        console.log('📱 No HWID match found for device');
+      }
+
+      return matchFound;
     } catch (error) {
       console.error('Error checking device authorization:', error);
       return false;
     }
+  }
+
+  /**
+   * Extract HWID from device (try multiple methods)
+   */
+  extractHWIDFromDevice(device) {
+    // Method 1: Try manufacturer data
+    let hwid = this.extractHWIDFromManufacturerData(device.manufacturerData);
+    if (hwid) return hwid;
+
+    // Method 2: Use MAC address (remove colons and convert)
+    if (device.id) {
+      // Remove colons and convert to uppercase
+      hwid = device.id.replace(/:/g, '').toUpperCase();
+      console.log('📱 Using MAC address as HWID:', hwid);
+      return hwid;
+    }
+
+    return null;
+  }
+
+  /**
+   * Compare HWIDs with MAC to HWID conversion (CC -> 5C prefix handling)
+   */
+  compareHWIDsWithConversion(deviceHwid, authorizedHwid) {
+    // Direct match
+    if (deviceHwid === authorizedHwid) {
+      return true;
+    }
+
+    // Handle CC -> 5C prefix conversion specifically
+    if (deviceHwid.startsWith('CC') && authorizedHwid.startsWith('5C')) {
+      const deviceWithout5C = '5C' + deviceHwid.slice(2);
+      if (deviceWithout5C === authorizedHwid) {
+        console.log(`📱 CC->5C conversion match: ${deviceHwid} -> ${deviceWithout5C}`);
+        return true;
+      }
+    }
+
+    // Reverse: 5C -> CC conversion
+    if (deviceHwid.startsWith('5C') && authorizedHwid.startsWith('CC')) {
+      const authorizedWith5C = '5C' + authorizedHwid.slice(2);
+      if (deviceHwid === authorizedWith5C) {
+        console.log(`📱 5C->CC conversion match: ${authorizedHwid} -> ${authorizedWith5C}`);
+        return true;
+      }
+    }
+
+    // KEY FIX: Match last 8 characters (handles MAC vs HWID format differences)
+    // Device MAC: CC3416346938 vs Authorized HWID: 5C3616346938
+    // Last 8 chars: 16346938 (identical)
+    if (deviceHwid.length >= 8 && authorizedHwid.length >= 8) {
+      const deviceLast8 = deviceHwid.slice(-8);
+      const authorizedLast8 = authorizedHwid.slice(-8);
+      
+      if (deviceLast8 === authorizedLast8) {
+        console.log(`📱 Last 8 characters match: ${deviceLast8}`);
+        return true;
+      }
+    }
+
+    // Fallback: Match last 10 characters (original approach)
+    if (deviceHwid.length >= 10 && authorizedHwid.length >= 10) {
+      const deviceLast10 = deviceHwid.slice(-10);
+      const authorizedLast10 = authorizedHwid.slice(-10);
+      
+      if (deviceLast10 === authorizedLast10) {
+        console.log(`📱 Last 10 characters match: ${deviceLast10}`);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -532,6 +682,21 @@ class BluetoothService {
       console.error('Error setting up data characteristic:', error);
       return false;
     }
+  }
+
+  /**
+   * Refresh authorized devices after login
+   */
+  async refreshAuthorizedDevices() {
+    console.log('🔄 Refreshing authorized devices after login...');
+    return await this.fetchAuthorizedDevices();
+  }
+
+  /**
+   * Get current list of authorized HWIDs
+   */
+  getAuthorizedHWIDs() {
+    return [...this.authorizedHWIDs];
   }
 }
 

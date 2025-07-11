@@ -10,6 +10,8 @@ web-build/
 expo-env.d.ts
 
 # Native
+# android/ - removed: we need native folders for MacrotellectLink SDK
+# ios/ - removed: we need native folders for custom modules
 .kotlin/
 *.orig.*
 *.jks

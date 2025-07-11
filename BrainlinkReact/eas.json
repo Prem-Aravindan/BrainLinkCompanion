@@ -1,0 +1,35 @@
+{
+  "cli": {
+    "version": ">= 7.8.6"
+  },
+  "build": {
+    "development": {
+      "distribution": "internal",
+      "android": {
+        "gradleCommand": ":app:assembleDebug",
+        "buildType": "apk"
+      },
+      "ios": {
+        "buildConfiguration": "Debug"
+      },
+      "channel": "development",
+      "developmentClient": true
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "preview"
+    },
+    "production": {
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "production"
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

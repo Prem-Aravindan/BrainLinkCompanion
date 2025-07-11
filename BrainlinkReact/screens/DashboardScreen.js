@@ -13,115 +13,167 @@ import {
 import { Dimensions } from 'react-native';
 import { COLORS, EEG_CONFIG } from '../constants';
 import BluetoothService from '../services/BluetoothService';
-import EEGProcessor from '../utils/EEGProcessor';
-import EEGChart from '../components/EEGChart';
+import ApiService from '../services/ApiService';
+import { createEEGProcessor } from '../utils/eegProcessing';
 import { BandPowerDisplay } from '../components/BandPowerDisplay';
 import DeviceListModal from '../components/DeviceListModal';
+import { useBrainLinkRealData } from '../hooks/useBrainLinkRealData';
+
+// Create the main EEG processor instance
+const eegProcessor = createEEGProcessor(EEG_CONFIG.SAMPLING_RATE);
 
 const screenWidth = Dimensions.get('window').width;
 
 const DashboardScreen = ({ user = {}, onLogout }) => {
   const username = user.username || 'Unknown User';
 
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [deviceName, setDeviceName] = useState(null);
-  const [eegData, setEegData] = useState([]);
-  const [bandPowers, setBandPowers] = useState({
-    delta: 0,
-    theta: 0,
-    alpha: 0,
-    beta: 0,
-    gamma: 0,
-  });
-  const [isRecording, setIsRecording] = useState(false);
+  // Use the TGAM hook for real-time EEG data
+  const {
+    isConnected,
+    isConnecting,
+    deviceName,
+    connectionError,
+    eegData,
+    dataQuality,
+    connect,
+    disconnect,
+    reconnect,
+    startRecording,
+    stopRecording,
+    isRecording,
+    getParserStats,
+  } = useBrainLinkRealData();
+
+  // UI state
+  const [bluetoothAvailable, setBluetoothAvailable] = useState(true);
+  const [bluetoothStatus, setBluetoothStatus] = useState('Checking...');
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [isTogglingRecording, setIsTogglingRecording] = useState(false);
   const [showDeviceList, setShowDeviceList] = useState(false);
 
-  useEffect(() => {
-    // Initialize Bluetooth service
-    BluetoothService.initialize();
-    
-    // Set up data listener
-    const unsubscribe = BluetoothService.onDataReceived((data) => {
-      handleEEGData(data);
-    });
+  // Derived state from TGAM EEG data
+  const bandPowers = {
+    delta: eegData.delta,
+    theta: eegData.theta,
+    alpha: eegData.alpha,
+    beta: eegData.beta,
+    gamma: eegData.gamma,
+  };
 
+  useEffect(() => {
+    // Initialize Bluetooth service with error handling
+    const initializeBluetooth = async () => {
+      try {
+        setBluetoothStatus('Initializing...');
+        const initialized = await BluetoothService.initialize();
+        if (!initialized) {
+          console.warn('Bluetooth service failed to initialize');
+          setBluetoothAvailable(false);
+          setBluetoothStatus('Not Available');
+        } else {
+          setBluetoothAvailable(true);
+          setBluetoothStatus('Ready');
+        }
+      } catch (error) {
+        console.error('Bluetooth initialization failed:', error);
+        setBluetoothAvailable(false);
+        setBluetoothStatus(`Error: ${error.message}`);
+      }
+    };
+    
+    initializeBluetooth();
+
+    // Cleanup function
     return () => {
-      BluetoothService.disconnect();
-      unsubscribe && unsubscribe();
+      // Cleanup is handled by the useBrainLinkRealData hook
     };
   }, []);
 
-  const handleEEGData = (rawData) => {
-    try {
-      // Process the raw EEG data
-      const processedData = EEGProcessor.processRawData(rawData);
-      
-      // Update EEG data array (keep last 256 samples for 1 second window)
-      setEegData(prevData => {
-        const newData = [...prevData, ...processedData];
-        return newData.slice(-EEG_CONFIG.SAMPLING_RATE);
-      });
-
-      // Calculate band powers if we have enough data
-      if (eegData.length >= EEG_CONFIG.WINDOW_SIZE) {
-        const powers = EEGProcessor.calculateBandPowers(eegData.slice(-EEG_CONFIG.WINDOW_SIZE));
-        setBandPowers(powers);
-      }
-    } catch (error) {
-      console.error('Error processing EEG data:', error);
-    }
-  };
   const connectToDevice = async () => {
+    if (isConnecting) {
+      console.log('⚠️ Connection already in progress, ignoring request');
+      return;
+    }
+    
     setShowDeviceList(true);
   };
 
-  const handleDeviceSelected = (device) => {
-    setIsConnected(true);
-    setDeviceName(device.name);
-    Alert.alert('Success', `Connected to ${device.name}`);
+  const handleDeviceSelected = async (device) => {
+    try {
+      console.log(`🔗 Attempting to connect to device: ${device.name}`);
+      setShowDeviceList(false);
+      
+      // Use the hook's connect method
+      await connect(device.id);
+      
+    } catch (error) {
+      console.error('❌ Connection error:', error);
+      Alert.alert('Connection Error', `Failed to connect: ${error.message}`);
+    }
   };
 
   const disconnectDevice = async () => {
+    if (!isConnected || isDisconnecting) {
+      console.log('⚠️ Cannot disconnect: not connected or already disconnecting');
+      return;
+    }
+    
     try {
-      await BluetoothService.disconnect();
-      setIsConnected(false);
-      setDeviceName(null);
-      setEegData([]);
-      setIsRecording(false);
-      Alert.alert('Disconnected', 'Device disconnected successfully');
+      setIsDisconnecting(true);
+      console.log('🔌 Disconnecting device...');
+      
+      // Use the hook's disconnect method
+      await disconnect();
+      console.log('✅ Device disconnected successfully');
     } catch (error) {
-      Alert.alert('Error', error.message);
+      console.error('❌ Disconnect error:', error);
+      Alert.alert('Disconnect Error', `Failed to disconnect: ${error.message}`);
+    } finally {
+      setIsDisconnecting(false);
     }
   };
 
-  const toggleRecording = () => {
-    setIsRecording(!isRecording);
-    // Here you would implement actual recording functionality
-    Alert.alert(
-      isRecording ? 'Recording Stopped' : 'Recording Started',
-      isRecording ? 'EEG recording has been stopped' : 'EEG recording has been started'
-    );
-  };
-  const getChartData = () => {
-    if (eegData.length < 50) {
-      return {
-        labels: Array.from({ length: 50 }, (_, i) => ''),
-        datasets: [{
-          data: Array.from({ length: 50 }, () => 0),
-        }],
-      };
+  const toggleRecording = async () => {
+    if (!isConnected || isTogglingRecording) {
+      if (!isConnected) {
+        Alert.alert('No Device', 'Please connect to a device first');
+      }
+      return;
     }
-
-    const lastSamples = eegData.slice(-50); // Show last 50 samples
-    return {
-      labels: Array.from({ length: 50 }, (_, i) => ''),
-      datasets: [{
-        data: lastSamples,
-        color: (opacity = 1) => COLORS.primary,
-        strokeWidth: 2,
-      }],
-    };
+    
+    try {
+      setIsTogglingRecording(true);
+      
+      if (!isRecording) {
+        // Start recording using the hook
+        console.log('🎬 Starting EEG recording...');
+        await startRecording();
+        
+        Alert.alert(
+          'Recording Started',
+          'EEG data streaming has been started. Data will appear in real-time.'
+        );
+        console.log('✅ EEG recording started successfully');
+      } else {
+        // Stop recording using the hook
+        console.log('⏹️ Stopping EEG recording...');
+        await stopRecording();
+        
+        Alert.alert(
+          'Recording Stopped',
+          'EEG data streaming has been stopped.'
+        );
+        console.log('✅ EEG recording stopped successfully');
+      }
+    } catch (error) {
+      console.error('❌ Recording toggle failed:', error);
+      Alert.alert(
+        'Recording Error',
+        `Failed to ${isRecording ? 'stop' : 'start'} recording: ${error.message}`
+      );
+    } finally {
+      setIsTogglingRecording(false);
+    }
   };
 
   return (
@@ -143,6 +195,20 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
         {/* Connection Status */}
         <View style={styles.statusCard}>
           <Text style={styles.cardTitle}>Device Status</Text>
+          
+          {!bluetoothAvailable && (
+            <View style={styles.warningCard}>
+              <Text style={styles.warningTitle}>⚠️ Bluetooth Not Available</Text>
+              <Text style={styles.warningText}>
+                Status: {bluetoothStatus}
+              </Text>
+              <Text style={styles.warningText}>
+                The development build may not include the react-native-ble-plx module properly. 
+                You can test the app functionality using simulated data.
+              </Text>
+            </View>
+          )}
+          
           <View style={styles.statusRow}>
             <View style={[styles.statusIndicator, { backgroundColor: isConnected ? COLORS.success : COLORS.error }]} />
             <Text style={styles.statusText}>
@@ -151,27 +217,48 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
           </View>
             {!isConnected ? (
             <TouchableOpacity 
-              style={[styles.button, styles.connectButton]}
+              style={[styles.button, styles.connectButton, (!bluetoothAvailable || isConnecting) && styles.disabledButton]}
               onPress={connectToDevice}
-              disabled={isConnecting}
+              disabled={isConnecting || !bluetoothAvailable}
             >
-              <Text style={styles.buttonText}>Connect Device</Text>
+              <View style={styles.buttonContent}>
+                {isConnecting && (
+                  <ActivityIndicator color={COLORS.white} size="small" style={{ marginRight: 8 }} />
+                )}
+                <Text style={styles.buttonText}>
+                  {isConnecting ? 'Connecting...' : bluetoothAvailable ? 'Connect Device' : 'Bluetooth Unavailable'}
+                </Text>
+              </View>
             </TouchableOpacity>
           ) : (
             <View style={styles.buttonRow}>
               <TouchableOpacity 
-                style={[styles.button, styles.disconnectButton]}
+                style={[
+                  styles.button, 
+                  styles.disconnectButton,
+                  isDisconnecting && styles.disabledButton
+                ]}
                 onPress={disconnectDevice}
+                disabled={isDisconnecting}
               >
-                <Text style={styles.buttonText}>Disconnect</Text>
+                <Text style={styles.buttonText}>
+                  {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                </Text>
               </TouchableOpacity>
               
               <TouchableOpacity 
-                style={[styles.button, isRecording ? styles.stopButton : styles.recordButton]}
+                style={[
+                  styles.button, 
+                  isRecording ? styles.stopButton : styles.recordButton,
+                  isTogglingRecording && styles.disabledButton
+                ]}
                 onPress={toggleRecording}
+                disabled={isTogglingRecording}
               >
                 <Text style={styles.buttonText}>
-                  {isRecording ? 'Stop Recording' : 'Start Recording'}
+                  {isTogglingRecording 
+                    ? (isRecording ? 'Stopping...' : 'Starting...')
+                    : (isRecording ? 'Stop Recording' : 'Start Recording')}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -183,13 +270,71 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
           visible={showDeviceList}
           onClose={() => setShowDeviceList(false)}
           onDeviceSelected={handleDeviceSelected}
-        />{/* EEG Chart */}
+        />
+
+        {/* Connection Error Display */}
+        {connectionError && (
+          <View style={styles.errorCard}>
+            <Text style={styles.errorTitle}>⚠️ Connection Issue</Text>
+            <Text style={styles.errorText}>{connectionError}</Text>
+          </View>
+        )}
+
+        {/* TGAM Data Quality */}
         {isConnected && (
-          <EEGChart 
-            data={eegData}
-            title="Real-time EEG Signal"
-            height={200}
-          />
+          <View style={styles.statusCard}>
+            <Text style={styles.cardTitle}>Data Quality</Text>
+            <View style={styles.dataQualityContainer}>
+              <View style={styles.qualityMetric}>
+                <Text style={styles.qualityLabel}>Signal Strength:</Text>
+                <Text style={[styles.qualityValue, 
+                  dataQuality.signalStrength > 80 ? styles.goodQuality :
+                  dataQuality.signalStrength > 50 ? styles.fairQuality : styles.poorQuality
+                ]}>
+                  {dataQuality.signalStrength}%
+                </Text>
+              </View>
+              <View style={styles.qualityMetric}>
+                <Text style={styles.qualityLabel}>Frames/sec:</Text>
+                <Text style={styles.qualityValue}>{dataQuality.framesPerSecond}</Text>
+              </View>
+              <View style={styles.qualityMetric}>
+                <Text style={styles.qualityLabel}>Total Frames:</Text>
+                <Text style={styles.qualityValue}>{dataQuality.totalFrames}</Text>
+              </View>
+              <View style={styles.qualityMetric}>
+                <Text style={styles.qualityLabel}>Poor Signal:</Text>
+                <Text style={styles.qualityValue}>{eegData.poorSignal}</Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Real-time EEG Metrics */}
+        {isConnected && (
+          <View style={styles.statusCard}>
+            <Text style={styles.cardTitle}>Live EEG Data</Text>
+            <View style={styles.eegMetricsContainer}>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>Attention:</Text>
+                <Text style={styles.metricValue}>{eegData.attention}</Text>
+              </View>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>Meditation:</Text>
+                <Text style={styles.metricValue}>{eegData.meditation}</Text>
+              </View>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>Raw EEG:</Text>
+                <Text style={styles.metricValue}>{eegData.rawEEG.toFixed(2)} µV</Text>
+              </View>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>Last Update:</Text>
+                <Text style={styles.metricValue}>
+                  {eegData.timestamp ? new Date(eegData.timestamp).toLocaleTimeString() : 'No data'}
+                </Text>
+              </View>
+            </View>
+          </View>
         )}
 
         {/* Band Powers */}
@@ -323,6 +468,10 @@ const styles = StyleSheet.create({
   disconnectButton: {
     backgroundColor: COLORS.error,
   },
+  disabledButton: {
+    backgroundColor: COLORS.lightGray,
+    opacity: 0.6,
+  },
   recordButton: {
     backgroundColor: COLORS.success,
   },
@@ -334,10 +483,105 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     fontSize: 16,
   },
+  buttonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   instructionText: {
     fontSize: 14,
     color: COLORS.text,
     lineHeight: 20,
+  },
+  warningCard: {
+    backgroundColor: '#fff3cd',
+    borderLeftWidth: 4,
+    borderLeftColor: '#ffc107',
+    padding: 12,
+    marginBottom: 15,
+    borderRadius: 4,
+  },
+  warningTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#856404',
+    marginBottom: 8,
+  },
+  warningText: {
+    fontSize: 14,
+    color: '#856404',
+    lineHeight: 20,
+  },
+  disabledButton: {
+    backgroundColor: COLORS.disabled,
+    opacity: 0.6,
+  },
+  errorCard: {
+    backgroundColor: '#f8d7da',
+    borderColor: '#f5c6cb',
+    borderWidth: 1,
+    padding: 15,
+    marginBottom: 15,
+    borderRadius: 4,
+  },
+  errorTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#721c24',
+    marginBottom: 8,
+  },
+  errorText: {
+    fontSize: 14,
+    color: '#721c24',
+    lineHeight: 20,
+  },
+  dataQualityContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  qualityMetric: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '48%',
+    marginBottom: 8,
+  },
+  qualityLabel: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    flex: 1,
+  },
+  qualityValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: COLORS.text,
+  },
+  goodQuality: {
+    color: '#28a745',
+  },
+  fairQuality: {
+    color: '#ffc107',
+  },
+  poorQuality: {
+    color: '#dc3545',
+  },
+  eegMetricsContainer: {
+    marginTop: 8,
+  },
+  metricRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  metricLabel: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
+  metricValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: COLORS.text,
   },
 });
 

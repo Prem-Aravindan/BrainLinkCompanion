@@ -1,4 +1,11 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+let AsyncStorage;
+try {
+  AsyncStorage = require('@react-native-async-storage/async-storage').default;
+} catch (e) {
+  console.warn('AsyncStorage not available:', e.message);
+  AsyncStorage = null;
+}
+
 import { API_CONFIG } from '../constants';
 
 class ApiService {
@@ -26,6 +33,12 @@ class ApiService {
    */
   async getStoredToken() {
     try {
+      // Check if AsyncStorage is available
+      if (typeof AsyncStorage === 'undefined' || AsyncStorage === null) {
+        console.warn('AsyncStorage is not available');
+        return null;
+      }
+      
       const token = await AsyncStorage.getItem('auth_token');
       if (token) {
         this.token = token;
@@ -42,10 +55,19 @@ class ApiService {
    */
   async storeToken(token) {
     try {
+      // Check if AsyncStorage is available
+      if (typeof AsyncStorage === 'undefined' || AsyncStorage === null) {
+        console.warn('AsyncStorage is not available, storing token in memory only');
+        this.token = token;
+        return;
+      }
+      
       await AsyncStorage.setItem('auth_token', token);
       this.token = token;
     } catch (error) {
       console.error('Error storing token:', error);
+      // Still set the token in memory as fallback
+      this.token = token;
     }
   }
 
@@ -54,10 +76,19 @@ class ApiService {
    */
   async removeToken() {
     try {
+      // Check if AsyncStorage is available
+      if (typeof AsyncStorage === 'undefined' || AsyncStorage === null) {
+        console.warn('AsyncStorage is not available, removing token from memory only');
+        this.token = null;
+        return;
+      }
+      
       await AsyncStorage.removeItem('auth_token');
       this.token = null;
     } catch (error) {
       console.error('Error removing token:', error);
+      // Still remove the token from memory as fallback
+      this.token = null;
     }
   }
 
@@ -131,21 +162,37 @@ class ApiService {
 
       console.log('✅ Login response received:', response);
 
-      // Extract JWT token from response (matches Python: data.get("x-jwt-access-token"))
+      // Extract JWT token from response
       if (response['x-jwt-access-token']) {
         await this.storeToken(response['x-jwt-access-token']);
         this.setToken(response['x-jwt-access-token']);
         console.log('🎫 JWT token stored successfully');
+        
+        // Fetch user information and HWID separately
+        const [userInfo, hwidInfo] = await Promise.all([
+          this.getCurrentUser(),
+          this.getUserHWIDs()
+        ]);
+        
+        console.log('👤 User info fetched:', userInfo);
+        console.log('🔗 HWID info fetched:', hwidInfo);
+        
+        return {
+          success: true,
+          user: {
+            username: username,
+            brainlink_hwid: hwidInfo?.brainlink_hwid || null,
+            ...userInfo
+          },
+          token: response['x-jwt-access-token'],
+        };
       } else {
         console.warn('⚠️ No x-jwt-access-token in response:', Object.keys(response));
+        return {
+          success: false,
+          error: 'No authentication token received',
+        };
       }
-
-      return {
-        success: true,
-        user: response.user,
-        token: response['x-jwt-access-token'],
-        response: response, // Include full response for debugging
-      };
     } catch (error) {
       console.error('❌ Login failed:', error);
       return {
@@ -203,23 +250,46 @@ class ApiService {
 //   }
 
   /**
-   * Get user's authorized HWIDs
+   * Get current user information
    */
-  async getUserHWIDs(userId) {
+  async getCurrentUser() {
     try {
-      const response = await this.makeRequest(`/users/hwids`, {
+      console.log('👤 Fetching current user info...');
+      
+      const response = await this.makeRequest('/users/current_user', {
         method: 'GET',
       });
 
+      console.log('✅ User info response:', response);
+      
+      return response; // The endpoint returns the user object directly
+    } catch (error) {
+      console.error('❌ Failed to fetch current user:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user's brainlink HWID
+   */
+  async getUserHWIDs(userId) {
+    try {
+      const response = await this.makeRequest('/users/hwids', {
+        method: 'GET',
+      });
+
+      console.log('🔗 HWID response:', response);
+      
       return {
+        brainlink_hwid: response.brainlink_hwid || null,
         success: true,
-        hwids: response.hwids || [],
       };
     } catch (error) {
+      console.error('❌ Failed to fetch HWID:', error);
       return {
+        brainlink_hwid: null,
         success: false,
         error: error.message,
-        hwids: [],
       };
     }
   }
@@ -420,23 +490,12 @@ class ApiService {
   }
 
   /**
-   * Send EEG band power data (matches Python implementation)
+   * Send EEG band power data (matches Python implementation exactly)
    */
-  async sendEEGData(bandPowers) {
+  async sendEEGData(payload) {
     try {
-      // Construct payload matching Python format
-      const payload = {
-        'Delta power': bandPowers.delta || 0,
-        'Relative Delta': bandPowers.relativeDelta || 0,
-        'Theta power': bandPowers.theta || 0,
-        'Relative Theta': bandPowers.relativeTheta || 0,
-        'Alpha power': bandPowers.alpha || 0,
-        'Relative Alpha': bandPowers.relativeAlpha || 0,
-        'Beta power': bandPowers.beta || 0,
-        'Relative Beta': bandPowers.relativeBeta || 0,
-        'Gamma power': bandPowers.gamma || 0,
-        'Relative Gamma': bandPowers.relativeGamma || 0,
-      };
+      // Use the payload as-is since it's already formatted to match Python
+      console.log('📤 Sending EEG data to backend:', payload);
 
       const response = await this.makeRequest('/brainlink_data', {
         method: 'POST',

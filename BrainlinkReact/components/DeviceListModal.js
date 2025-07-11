@@ -27,21 +27,16 @@ const DeviceListModal = ({ visible, onClose, onDeviceSelected }) => {
   const scanForDevices = async () => {
     setIsScanning(true);
     try {
-      // Get paired devices
-      const pairedDevices = await BluetoothService.getPairedDevices();
+      // Initialize Bluetooth service if needed
+      await BluetoothService.initialize();
       
-      // Start discovery for unpaired devices
-      const discoveredDevices = await BluetoothService.startDiscovery();
+      // Scan for BrainLink devices
+      const discoveredDevices = await BluetoothService.scanForDevices();
       
-      // Combine and filter unique devices
-      const allDevices = [...pairedDevices, ...discoveredDevices];
-      const uniqueDevices = allDevices.filter((device, index, self) => 
-        index === self.findIndex(d => d.id === device.id)
-      );
-      
-      setDevices(uniqueDevices);
+      setDevices(discoveredDevices);
     } catch (error) {
-      Alert.alert('Scan Error', error.message);
+      console.error('Scan error:', error);
+      Alert.alert('Scan Error', error.message || 'Failed to scan for devices');
     } finally {
       setIsScanning(false);
     }
@@ -74,10 +69,11 @@ const DeviceListModal = ({ visible, onClose, onDeviceSelected }) => {
       disabled={selectedDevice !== null}
     >
       <View style={styles.deviceInfo}>
-        <Text style={styles.deviceName}>{item.name || 'Unknown Device'}</Text>
+        <Text style={styles.deviceName}>{item.name || item.localName || 'Unknown Device'}</Text>
         <Text style={styles.deviceId}>{item.id}</Text>
+        {item.hwid && <Text style={styles.deviceHwid}>HWID: {item.hwid}</Text>}
         <Text style={styles.deviceStatus}>
-          {item.paired ? 'Paired' : 'Available'}
+          {item.isConnectable ? 'Available' : 'Not Connectable'}
         </Text>
       </View>
       <View style={styles.deviceIcon}>
@@ -224,6 +220,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.secondary,
     marginBottom: 2,
+  },
+  deviceHwid: {
+    fontSize: 12,
+    color: COLORS.primary,
+    marginBottom: 2,
+    fontWeight: '500',
   },
   deviceStatus: {
     fontSize: 12,

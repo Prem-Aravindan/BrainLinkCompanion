@@ -15,7 +15,6 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 // MacrotellectLink SDK imports - using actual package names
 import com.boby.bluetoothconnect.LinkManager;
-import com.boby.bluetoothconnect.bean.BrainWave;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -67,11 +66,14 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "Initializing MacrotellectLink SDK...");
             
             Context context = reactContext.getApplicationContext();
+            if (context == null) {
+                promise.reject("CONTEXT_ERROR", "React context is null");
+                return;
+            }
             
             // Create LinkManager instance with required context
-            linkManager = new LinkManager(context);
-            
-            if (linkManager != null) {
+            try {
+                linkManager = new LinkManager(context);
                 isInitialized = true;
                 Log.d(TAG, "MacrotellectLink SDK initialized successfully");
                 
@@ -80,8 +82,10 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
                 result.putString("message", "MacrotellectLink SDK initialized");
                 result.putString("package", "com.boby.bluetoothconnect");
                 promise.resolve(result);
-            } else {
-                throw new Exception("Failed to create LinkManager instance");
+                
+            } catch (Exception linkManagerException) {
+                Log.e(TAG, "Failed to create LinkManager", linkManagerException);
+                promise.reject("LINKMANAGER_ERROR", "Failed to create LinkManager: " + linkManagerException.getMessage());
             }
             
         } catch (Exception e) {

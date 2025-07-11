@@ -11,4 +11,8 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
+# MacrotellectLink SDK
+-keep class com.boby.bluetoothconnect.** { *; }
+-keep class com.clj.fastble.** { *; }
+
 # Add any project specific keep options here:

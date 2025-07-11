@@ -13,8 +13,11 @@ import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
-// MacrotellectLink SDK imports - using actual package names
+// MacrotellectLink SDK imports - using actual package names  
 import com.boby.bluetoothconnect.LinkManager;
+import com.boby.bluetoothconnect.classic.manage.BlueManager;
+import com.boby.bluetoothconnect.classic.listener.OnSearchDeviceListener;
+import com.boby.bluetoothconnect.classic.bean.BlueConnectDevice;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -33,6 +36,7 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     private static final String MODULE_NAME = "BrainLinkModule";
     
     private ReactApplicationContext reactContext;
+    private BlueManager blueManager;
     private boolean isInitialized = false;
     
     public BrainLinkModule(ReactApplicationContext reactContext) {
@@ -70,28 +74,28 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
                 return;
             }
             
-            // For now, just verify the SDK classes are available without instantiating
+            // Now let's implement actual BlueManager initialization
             try {
-                // Test if LinkManager class can be loaded
-                Class<?> linkManagerClass = LinkManager.class;
+                // Create BlueManager instance for actual device detection
+                blueManager = new BlueManager(context);
                 
-                Log.d(TAG, "LinkManager class loaded: " + linkManagerClass.getName());
+                if (blueManager != null) {
+                    isInitialized = true;
+                    Log.d(TAG, "MacrotellectLink SDK initialized successfully with BlueManager");
+                    
+                    WritableMap result = Arguments.createMap();
+                    result.putBoolean("success", true);
+                    result.putString("message", "MacrotellectLink SDK initialized and ready for device detection");
+                    result.putString("package", "com.boby.bluetoothconnect");
+                    result.putString("manager", "BlueManager");
+                    promise.resolve(result);
+                } else {
+                    promise.reject("BLUEMANAGER_NULL", "BlueManager instance is null");
+                }
                 
-                // Mark as initialized without creating instances
-                // We'll add actual instantiation once we confirm the build works
-                isInitialized = true;
-                Log.d(TAG, "MacrotellectLink SDK classes verified successfully");
-                
-                WritableMap result = Arguments.createMap();
-                result.putBoolean("success", true);
-                result.putString("message", "MacrotellectLink SDK classes verified and available");
-                result.putString("package", "com.boby.bluetoothconnect");
-                result.putString("linkManagerClass", linkManagerClass.getName());
-                promise.resolve(result);
-                
-            } catch (Exception classException) {
-                Log.e(TAG, "Failed to load SDK classes", classException);
-                promise.reject("CLASS_LOADING_ERROR", "Failed to load SDK classes: " + classException.getMessage());
+            } catch (Exception blueManagerException) {
+                Log.e(TAG, "Failed to create BlueManager", blueManagerException);
+                promise.reject("BLUEMANAGER_ERROR", "Failed to create BlueManager: " + blueManagerException.getMessage());
             }
                 
         } catch (Exception e) {
@@ -106,17 +110,49 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void startScan(Promise promise) {
         try {
-            if (!isInitialized) {
+            if (!isInitialized || blueManager == null) {
                 promise.reject("NOT_INITIALIZED", "SDK not initialized");
                 return;
             }
             
             Log.d(TAG, "Starting device scan...");
             
-            // For now, simulate scan start without actual BlueManager instance
-            // This ensures the build succeeds before we implement actual functionality
+            // Implement actual device scanning using BlueManager
+            blueManager.searchDevices(new OnSearchDeviceListener() {
+                @Override
+                public void onStartDiscovery() {
+                    Log.d(TAG, "Device discovery started");
+                    
+                    WritableMap event = Arguments.createMap();
+                    event.putString("type", "scanStarted");
+                    sendEvent("MacrotellectLink_DeviceEvent", event);
+                }
+                
+                @Override
+                public void onNewDeviceFound(BlueConnectDevice device) {
+                    Log.d(TAG, "Device found: " + device.getDeviceName() + " - " + device.getDeviceAddress());
+                    
+                    WritableMap deviceInfo = Arguments.createMap();
+                    deviceInfo.putString("name", device.getDeviceName());
+                    deviceInfo.putString("address", device.getDeviceAddress());
+                    
+                    WritableMap event = Arguments.createMap();
+                    event.putString("type", "deviceFound");
+                    event.putMap("device", deviceInfo);
+                    sendEvent("MacrotellectLink_DeviceEvent", event);
+                }
+                
+                @Override
+                public void onSearchCompleted() {
+                    Log.d(TAG, "Device discovery completed");
+                    
+                    WritableMap event = Arguments.createMap();
+                    event.putString("type", "scanCompleted");
+                    sendEvent("MacrotellectLink_DeviceEvent", event);
+                }
+            });
             
-            Log.d(TAG, "Device scan started successfully (simulated)");
+            Log.d(TAG, "Device scan started successfully");
             promise.resolve(true);
             
         } catch (Exception e) {
@@ -131,8 +167,9 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void stopScan(Promise promise) {
         try {
-            if (isInitialized) {
-                Log.d(TAG, "Device scan stopped (simulated)");
+            if (isInitialized && blueManager != null) {
+                blueManager.stopSearchDevices();
+                Log.d(TAG, "Device scan stopped");
                 promise.resolve(true);
             } else {
                 promise.reject("NOT_INITIALIZED", "SDK not initialized");

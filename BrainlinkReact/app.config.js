@@ -10,7 +10,7 @@ module.exports = {
       }
     }
     
-    // Note: plugins removed since we have native android folder
+    // Note: android config removed since we have native android folder
     // All native configuration is handled in android/app/build.gradle
     // and native Java files directly
   }

@@ -44,6 +44,10 @@ function withMacrotellectLink(config) {
       const moduleTargetDir = path.join(platformProjectRoot, 'app', 'src', 'main', 'java', 'com', 'brainlinkreact');
       const moduleTargetPath = path.join(moduleTargetDir, 'BrainLinkModule.java');
       
+      // Copy BrainLinkPackage.java to the correct location
+      const packageSourcePath = path.join(projectRoot, 'native', 'BrainLinkPackage.java');
+      const packageTargetPath = path.join(moduleTargetDir, 'BrainLinkPackage.java');
+      
       // Ensure module directory exists
       if (!fs.existsSync(moduleTargetDir)) {
         fs.mkdirSync(moduleTargetDir, { recursive: true });
@@ -55,6 +59,14 @@ function withMacrotellectLink(config) {
         console.log('✅ BrainLinkModule.java copied to android project');
       } else {
         console.warn('⚠️ BrainLinkModule.java not found at:', moduleSourcePath);
+      }
+      
+      // Copy package file
+      if (fs.existsSync(packageSourcePath)) {
+        fs.copyFileSync(packageSourcePath, packageTargetPath);
+        console.log('✅ BrainLinkPackage.java copied to android project');
+      } else {
+        console.warn('⚠️ BrainLinkPackage.java not found at:', packageSourcePath);
       }
       
       return config;
@@ -99,43 +111,25 @@ function withMacrotellectLink(config) {
     },
   ]);
 
-  // Register BrainLinkModule in MainApplication.java
+  // Register BrainLinkModule in MainApplication.kt (Kotlin)
   config = withMainApplication(config, (config) => {
     const { modResults } = config;
 
-    // Add import
-    if (!modResults.contents.includes('import com.brainlinkreact.BrainLinkModule;')) {
+    // Add import for Kotlin
+    if (!modResults.contents.includes('import com.brainlinkreact.BrainLinkPackage')) {
       modResults.contents = modResults.contents.replace(
-        /import com\.facebook\.react\.ReactApplication;/,
-        `import com.facebook.react.ReactApplication;
-import com.brainlinkreact.BrainLinkModule;
-import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.bridge.NativeModule;
-import com.facebook.react.uimanager.ViewManager;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Collections;`
+        /import expo\.modules\.ReactNativeHostWrapper/,
+        `import expo.modules.ReactNativeHostWrapper
+import com.brainlinkreact.BrainLinkPackage`
       );
     }
 
-    // Add module to getPackages()
-    if (!modResults.contents.includes('new BrainLinkModule')) {
+    // Add module to getPackages() for Kotlin
+    if (!modResults.contents.includes('packages.add(BrainLinkPackage())')) {
       modResults.contents = modResults.contents.replace(
-        /packages\.add\(new ModuleRegistryAdapter\(mModuleRegistryProvider\)\);/,
-        `packages.add(new ModuleRegistryAdapter(mModuleRegistryProvider));
-        packages.add(new ReactPackage() {
-          @Override
-          public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
-            List<NativeModule> modules = new ArrayList<>();
-            modules.add(new BrainLinkModule(reactContext));
-            return modules;
-          }
-
-          @Override
-          public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
-            return Collections.emptyList();
-          }
-        });`
+        /\/\/ packages\.add\(MyReactNativePackage\(\)\)/,
+        `// packages.add(MyReactNativePackage())
+            packages.add(BrainLinkPackage())`
       );
     }
 

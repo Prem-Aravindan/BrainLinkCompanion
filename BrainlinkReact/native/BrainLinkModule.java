@@ -4,11 +4,8 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.Promise;
-import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.WritableNativeMap;
-import com.facebook.react.bridge.WritableArray;
-import com.facebook.react.bridge.WritableNativeArray;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import android.util.Log;
@@ -20,6 +17,8 @@ import com.boby.bluetoothconnect.callback.ScanCallBack;
 import com.boby.bluetoothconnect.classic.bean.BlueConnectDevice;
 import com.boby.bluetoothconnect.classic.listener.EEGPowerDataListener;
 import com.boby.bluetoothconnect.classic.listener.OnConnectListener;
+import com.boby.bluetoothconnect.classic.listener.IErrorListener;
+import com.boby.bluetoothconnect.classic.listener.IConnectionLostListener;
 import com.boby.bluetoothconnect.bean.BrainWave;
 import com.boby.bluetoothconnect.bean.Gravity;
 

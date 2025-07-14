@@ -13,6 +13,7 @@ import {
 import { Dimensions } from 'react-native';
 import { COLORS, EEG_CONFIG } from '../constants';
 import MacrotellectLinkService from '../services/MacrotellectLinkService';
+import BluetoothService from '../services/BluetoothService';
 import EEGProcessor from '../utils/EEGProcessor';
 import EEGChart from '../components/EEGChart';
 import { BandPowerDisplay } from '../components/BandPowerDisplay';
@@ -36,6 +37,9 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
   });
   const [isRecording, setIsRecording] = useState(false);
   const [showDeviceList, setShowDeviceList] = useState(false);
+  const [brainLinkConnected, setBrainLinkConnected] = useState(false);
+  const [brainLinkTesting, setBrainLinkTesting] = useState(false);
+  const [lastBrainLinkData, setLastBrainLinkData] = useState(null);
 
   useEffect(() => {
     // Initialize MacrotellectLink service
@@ -138,6 +142,76 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
         strokeWidth: 2,
       }],
     };
+  };
+
+  // BrainLink module testing functions
+  const testBrainLinkScan = async () => {
+    setBrainLinkTesting(true);
+    try {
+      console.log('🔍 Starting BrainLink scan...');
+      const result = await BluetoothService.startBrainLinkScan();
+      
+      if (result) {
+        Alert.alert('Success', 'BrainLink scan started! Check console for device discoveries.');
+        
+        // Stop scan after 10 seconds
+        setTimeout(async () => {
+          await BluetoothService.stopBrainLinkScan();
+          console.log('🛑 BrainLink scan stopped');
+          setBrainLinkTesting(false);
+        }, 10000);
+      } else {
+        Alert.alert('Error', 'Failed to start BrainLink scan');
+        setBrainLinkTesting(false);
+      }
+    } catch (error) {
+      console.error('BrainLink scan error:', error);
+      Alert.alert('Error', `BrainLink scan failed: ${error.message}`);
+      setBrainLinkTesting(false);
+    }
+  };
+
+  const testBrainLinkConnect = async () => {
+    try {
+      // Example device ID - replace with actual device ID from scan results
+      const deviceId = 'test-device-id';
+      console.log('🔗 Connecting to BrainLink device...');
+      
+      const result = await BluetoothService.connectToBrainLinkDevice(deviceId);
+      
+      if (result) {
+        setBrainLinkConnected(true);
+        Alert.alert('Success', 'Connected to BrainLink device! Starting EEG data collection...');
+        
+        // Start EEG data collection
+        await BluetoothService.startBrainLinkEEGData();
+      } else {
+        Alert.alert('Error', 'Failed to connect to BrainLink device');
+      }
+    } catch (error) {
+      console.error('BrainLink connection error:', error);
+      Alert.alert('Error', `BrainLink connection failed: ${error.message}`);
+    }
+  };
+
+  const testBrainLinkDisconnect = async () => {
+    try {
+      console.log('❌ Disconnecting from BrainLink device...');
+      
+      await BluetoothService.stopBrainLinkEEGData();
+      const result = await BluetoothService.disconnectBrainLinkDevice();
+      
+      if (result) {
+        setBrainLinkConnected(false);
+        setLastBrainLinkData(null);
+        Alert.alert('Success', 'Disconnected from BrainLink device');
+      } else {
+        Alert.alert('Error', 'Failed to disconnect from BrainLink device');
+      }
+    } catch (error) {
+      console.error('BrainLink disconnection error:', error);
+      Alert.alert('Error', `BrainLink disconnection failed: ${error.message}`);
+    }
   };
 
   return (

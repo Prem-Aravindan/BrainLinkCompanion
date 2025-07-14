@@ -1,8 +1,12 @@
 import { BleManager, Device, BleError, State } from 'react-native-ble-plx';
-import { Alert, PermissionsAndroid, Platform } from 'react-native';
+import { Alert, PermissionsAndroid, Platform, NativeModules, NativeEventEmitter } from 'react-native';
 import { Buffer } from 'buffer';
 import { BLUETOOTH_CONFIG } from '../constants';
 import ApiService from './ApiService';
+
+// Direct access to BrainLinkModule 
+const { BrainLinkModule } = NativeModules;
+const brainLinkEmitter = BrainLinkModule ? new NativeEventEmitter(BrainLinkModule) : null;
 
 class BluetoothService {
   constructor() {
@@ -46,6 +50,9 @@ class BluetoothService {
         );
         return false;
       }
+
+      // Initialize BrainLink native module
+      await this.initializeBrainLink();
 
       // Fetch user's authorized devices
       await this.fetchAuthorizedDevices();
@@ -697,6 +704,210 @@ class BluetoothService {
    */
   getAuthorizedHWIDs() {
     return [...this.authorizedHWIDs];
+  }
+
+  /**
+   * Initialize BrainLink native module
+   */
+  async initializeBrainLink() {
+    try {
+      if (!BrainLinkModule) {
+        console.error('BrainLinkModule is not available');
+        return false;
+      }
+
+      // Set up event listeners for BrainLink module
+      this.setupBrainLinkEventListeners();
+      
+      console.log('BrainLink module initialized successfully');
+      return true;
+    } catch (error) {
+      console.error('BrainLink initialization failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Set up event listeners for BrainLink native module
+   */
+  setupBrainLinkEventListeners() {
+    if (!brainLinkEmitter) return;
+
+    // Device discovery events
+    this.deviceFoundSubscription = brainLinkEmitter.addListener('onDeviceFound', (device) => {
+      console.log('BrainLink device found:', device);
+      this.notifyConnectionListeners('deviceFound', device);
+    });
+
+    this.scanFinishedSubscription = brainLinkEmitter.addListener('onScanFinished', () => {
+      console.log('BrainLink scan finished');
+      this.notifyConnectionListeners('scanFinished', null);
+    });
+
+    this.scanErrorSubscription = brainLinkEmitter.addListener('onScanError', (error) => {
+      console.error('BrainLink scan error:', error);
+      this.notifyConnectionListeners('scanError', error);
+    });
+
+    // EEG data events
+    this.eegDataSubscription = brainLinkEmitter.addListener('onEEGDataReceived', (data) => {
+      console.log('Raw EEG data received:', data);
+      this.notifyDataListeners('rawEEGData', data);
+    });
+
+    this.eegPowerDataSubscription = brainLinkEmitter.addListener('onEEGPowerDataReceived', (data) => {
+      console.log('EEG power data received:', data);
+      this.notifyDataListeners('eegPowerData', data);
+    });
+  }
+
+  /**
+   * Start scanning for BrainLink devices using native module
+   */
+  async startBrainLinkScan() {
+    try {
+      if (!BrainLinkModule) {
+        throw new Error('BrainLinkModule not available');
+      }
+
+      const result = await BrainLinkModule.startDeviceScan();
+      console.log('BrainLink scan started:', result);
+      return true;
+    } catch (error) {
+      console.error('Failed to start BrainLink scan:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Stop scanning for BrainLink devices
+   */
+  async stopBrainLinkScan() {
+    try {
+      if (!BrainLinkModule) {
+        throw new Error('BrainLinkModule not available');
+      }
+
+      const result = await BrainLinkModule.stopDeviceScan();
+      console.log('BrainLink scan stopped:', result);
+      return true;
+    } catch (error) {
+      console.error('Failed to stop BrainLink scan:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Connect to a BrainLink device using native module
+   */
+  async connectToBrainLinkDevice(deviceId) {
+    try {
+      if (!BrainLinkModule) {
+        throw new Error('BrainLinkModule not available');
+      }
+
+      const result = await BrainLinkModule.connectToDevice(deviceId);
+      console.log('Connected to BrainLink device:', result);
+      
+      this.isConnected = true;
+      this.connectedDevice = { id: deviceId };
+      this.notifyConnectionListeners('connected', { id: deviceId });
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to connect to BrainLink device:', error);
+      this.notifyConnectionListeners('connectionError', error);
+      return false;
+    }
+  }
+
+  /**
+   * Disconnect from BrainLink device
+   */
+  async disconnectBrainLinkDevice() {
+    try {
+      if (!BrainLinkModule) {
+        throw new Error('BrainLinkModule not available');
+      }
+
+      const result = await BrainLinkModule.disconnectDevice();
+      console.log('Disconnected from BrainLink device:', result);
+      
+      this.isConnected = false;
+      this.connectedDevice = null;
+      this.notifyConnectionListeners('disconnected', null);
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to disconnect BrainLink device:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Start EEG data collection from BrainLink device
+   */
+  async startBrainLinkEEGData() {
+    try {
+      if (!BrainLinkModule) {
+        throw new Error('BrainLinkModule not available');
+      }
+
+      if (!this.isConnected) {
+        throw new Error('No BrainLink device connected');
+      }
+
+      const result = await BrainLinkModule.startEEGDataCollection();
+      console.log('BrainLink EEG data collection started:', result);
+      return true;
+    } catch (error) {
+      console.error('Failed to start BrainLink EEG data collection:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Stop EEG data collection from BrainLink device
+   */
+  async stopBrainLinkEEGData() {
+    try {
+      if (!BrainLinkModule) {
+        throw new Error('BrainLinkModule not available');
+      }
+
+      const result = await BrainLinkModule.stopEEGDataCollection();
+      console.log('BrainLink EEG data collection stopped:', result);
+      return true;
+    } catch (error) {
+      console.error('Failed to stop BrainLink EEG data collection:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Clean up BrainLink event listeners
+   */
+  cleanupBrainLinkListeners() {
+    if (this.deviceFoundSubscription) {
+      this.deviceFoundSubscription.remove();
+      this.deviceFoundSubscription = null;
+    }
+    if (this.scanFinishedSubscription) {
+      this.scanFinishedSubscription.remove();
+      this.scanFinishedSubscription = null;
+    }
+    if (this.scanErrorSubscription) {
+      this.scanErrorSubscription.remove();
+      this.scanErrorSubscription = null;
+    }
+    if (this.eegDataSubscription) {
+      this.eegDataSubscription.remove();
+      this.eegDataSubscription = null;
+    }
+    if (this.eegPowerDataSubscription) {
+      this.eegPowerDataSubscription.remove();
+      this.eegPowerDataSubscription = null;
+    }
   }
 }
 

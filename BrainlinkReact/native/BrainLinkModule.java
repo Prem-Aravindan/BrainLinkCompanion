@@ -219,16 +219,6 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
                     sendEvent("onConnectionError", result);
                 }
 
-                @Override
-                public void onDisconnect(BlueConnectDevice device) {
-                    Log.d(TAG, "Disconnected from device: " + device.getAddress());
-                    connectedDevice = null;
-                    WritableMap result = new WritableNativeMap();
-                    result.putString("deviceId", device.getAddress());
-                    result.putString("status", "disconnected");
-                    sendEvent("onDeviceDisconnected", result);
-                }
-
                 // Implement required methods from IErrorListener
                 @Override
                 public void onError(Exception exception) {

@@ -152,7 +152,14 @@ dependencies {
     implementation("com.facebook.react:react-android")
 
     // MacrotellectLink SDK dependency - use absolute path for EAS build compatibility
-    implementation files("$projectDir/libs/MacrotellectLink_V1.4.3.jar")
+    def macrotellectJar = file("$projectDir/libs/MacrotellectLink_V1.4.3.jar")
+    if (macrotellectJar.exists()) {
+        println "MacrotellectLink JAR found at: ${macrotellectJar.absolutePath}"
+        implementation files("$projectDir/libs/MacrotellectLink_V1.4.3.jar")
+    } else {
+        println "ERROR: MacrotellectLink JAR not found at: ${macrotellectJar.absolutePath}"
+        throw new RuntimeException("MacrotellectLink JAR file not found")
+    }
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

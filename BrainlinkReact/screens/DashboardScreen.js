@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { Dimensions } from 'react-native';
 import { COLORS, EEG_CONFIG } from '../constants';
-import BluetoothService from '../services/BluetoothService';
+import MacrotellectLinkService from '../services/MacrotellectLinkService';
 import EEGProcessor from '../utils/EEGProcessor';
 import EEGChart from '../components/EEGChart';
 import { BandPowerDisplay } from '../components/BandPowerDisplay';
@@ -39,12 +39,12 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
   const [authorizedDevices, setAuthorizedDevices] = useState([]);
 
   useEffect(() => {
-    // Initialize Bluetooth service
-    BluetoothService.initialize();
+    // Initialize MacrotellectLink service
+    MacrotellectLinkService.initialize();
     
     // Get authorized devices list
     const updateAuthorizedDevices = () => {
-      const hwids = BluetoothService.getAuthorizedHWIDs();
+      const hwids = MacrotellectLinkService.getAuthorizedHWIDs();
       setAuthorizedDevices(hwids);
       console.log('📱 Authorized devices updated in UI:', hwids);
     };
@@ -53,12 +53,12 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
     updateAuthorizedDevices();
     
     // Set up data listener
-    const unsubscribe = BluetoothService.onDataReceived((data) => {
+    const unsubscribe = MacrotellectLinkService.onDataReceived((data) => {
       handleEEGData(data);
     });
 
     return () => {
-      BluetoothService.disconnect();
+      MacrotellectLinkService.disconnect();
       unsubscribe && unsubscribe();
     };
   }, []);
@@ -67,7 +67,7 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
   useEffect(() => {
     if (user && user.token) {
       setTimeout(() => {
-        const hwids = BluetoothService.getAuthorizedHWIDs();
+        const hwids = MacrotellectLinkService.getAuthorizedHWIDs();
         setAuthorizedDevices(hwids);
         console.log('📱 Authorized devices refreshed after user change:', hwids);
       }, 1000); // Small delay to ensure API call completes
@@ -116,7 +116,7 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
 
   const disconnectDevice = async () => {
     try {
-      await BluetoothService.disconnect();
+      await MacrotellectLinkService.disconnect();
       setIsConnected(false);
       setDeviceName(null);
       setEegData([]);

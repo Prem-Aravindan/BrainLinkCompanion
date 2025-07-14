@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants';
-import BluetoothService from '../services/BluetoothService';
+import MacrotellectLinkService from '../services/MacrotellectLinkService';
 
 const DeviceListModal = ({ visible, onClose, onDeviceSelected }) => {
   const [devices, setDevices] = useState([]);
@@ -27,22 +27,42 @@ const DeviceListModal = ({ visible, onClose, onDeviceSelected }) => {
   const scanForDevices = async () => {
     setIsScanning(true);
     try {
-      // Get paired devices
-      const pairedDevices = await BluetoothService.getPairedDevices();
+      // Start MacrotellectLink scan for BrainLink devices
+      await MacrotellectLinkService.startScan();
       
-      // Start discovery for unpaired devices
-      const discoveredDevices = await BluetoothService.startDiscovery();
+      // Set up listener for found devices
+      const unsubscribe = MacrotellectLinkService.onConnectionChange((status, device) => {
+        if (status === 'found' && device) {
+          setDevices(prevDevices => {
+            // Check if device already exists
+            const exists = prevDevices.find(d => d.address === device.address);
+            if (!exists) {
+              return [...prevDevices, {
+                id: device.address,
+                name: device.name,
+                address: device.address,
+                paired: false
+              }];
+            }
+            return prevDevices;
+          });
+        }
+      });
       
-      // Combine and filter unique devices
-      const allDevices = [...pairedDevices, ...discoveredDevices];
-      const uniqueDevices = allDevices.filter((device, index, self) => 
-        index === self.findIndex(d => d.id === device.id)
-      );
+      // Stop scanning after a reasonable time
+      setTimeout(async () => {
+        try {
+          await MacrotellectLinkService.stopScan();
+          setIsScanning(false);
+          unsubscribe && unsubscribe();
+        } catch (error) {
+          console.error('Error stopping scan:', error);
+          setIsScanning(false);
+        }
+      }, 10000); // 10 seconds scan time
       
-      setDevices(uniqueDevices);
     } catch (error) {
       Alert.alert('Scan Error', error.message);
-    } finally {
       setIsScanning(false);
     }
   };
@@ -50,13 +70,13 @@ const DeviceListModal = ({ visible, onClose, onDeviceSelected }) => {
   const handleDeviceSelect = async (device) => {
     setSelectedDevice(device);
     try {
-      const success = await BluetoothService.connectToDevice(device.id);
-      if (success) {
-        onDeviceSelected(device);
-        onClose();
-      } else {
-        Alert.alert('Connection Failed', 'Could not connect to the selected device');
-      }
+      // MacrotellectLink SDK handles connection automatically
+      // Just simulate successful connection for now
+      console.log('🎯 Device selected for connection:', device.name);
+      
+      // Let the service handle the connection
+      onDeviceSelected(device);
+      onClose();
     } catch (error) {
       Alert.alert('Connection Error', error.message);
     } finally {

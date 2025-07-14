@@ -87,9 +87,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.premjpa.BrainlinkReact'
+    namespace 'com.mindspellerbv.BrainlinkReact'
     defaultConfig {
-        applicationId 'com.premjpa.BrainlinkReact'
+        applicationId 'com.mindspellerbv.BrainlinkReact'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
@@ -148,9 +148,11 @@ android {
 }
 
 dependencies {
-    implementation files('libs/MacrotellectLink_V1.4.3.jar')
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+
+    // MacrotellectLink SDK dependency
+    implementation files('libs/MacrotellectLink_V1.4.3.jar')
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

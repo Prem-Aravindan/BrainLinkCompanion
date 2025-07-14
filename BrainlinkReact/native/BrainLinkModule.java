@@ -26,6 +26,10 @@ import com.boby.bluetoothconnect.bean.Gravity;
 
 import javax.annotation.Nonnull;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Map;
 
 public class BrainLinkModule extends ReactContextBaseJavaModule {
     private static final String TAG = "BrainLinkModule";
@@ -207,6 +211,12 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
+    public void initializeSDK(Promise promise) {
+        // Alias for initialize to match BrainLinkNativeService expectations
+        initialize(promise);
+    }
+
+    @ReactMethod
     public void startScan(Promise promise) {
         // Alias for startDeviceScan to match MacrotellectLinkService expectations
         startDeviceScan(promise);
@@ -243,6 +253,15 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
     public void disconnect(Promise promise) {
         // Alias for disconnectDevice to match MacrotellectLinkService expectations
         disconnectDevice(promise);
+    }
+
+    @Override
+    public Map<String, Object> getConstants() {
+        final Map<String, Object> constants = new HashMap<>();
+        constants.put("SDK_VERSION", "1.4.3");
+        constants.put("MODULE_NAME", "BrainLinkModule");
+        constants.put("SUPPORTS_MACROTELLECT", true);
+        return constants;
     }
 
     private void setupConnectionAndEEGListeners() {

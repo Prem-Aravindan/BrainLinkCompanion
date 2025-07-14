@@ -6,6 +6,8 @@ import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.WritableNativeMap;
+import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableNativeArray;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import android.util.Log;
@@ -183,6 +185,64 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
             Log.e(TAG, "Error stopping EEG data collection", e);
             promise.reject("EEG_STOP_ERROR", "Failed to stop EEG collection: " + e.getMessage());
         }
+    }
+
+    @ReactMethod
+    public void initialize(Promise promise) {
+        try {
+            if (linkManager == null) {
+                initializeLinkManager();
+            }
+            
+            if (linkManager != null) {
+                promise.resolve("MacrotellectLink SDK initialized successfully");
+                Log.d(TAG, "MacrotellectLink SDK initialization confirmed");
+            } else {
+                promise.reject("INIT_ERROR", "Failed to initialize LinkManager");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error during SDK initialization", e);
+            promise.reject("INIT_ERROR", "SDK initialization failed: " + e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void startScan(Promise promise) {
+        // Alias for startDeviceScan to match MacrotellectLinkService expectations
+        startDeviceScan(promise);
+    }
+
+    @ReactMethod
+    public void stopScan(Promise promise) {
+        // Alias for stopDeviceScan to match MacrotellectLinkService expectations
+        stopDeviceScan(promise);
+    }
+
+    @ReactMethod
+    public void getConnectedDevices(Promise promise) {
+        try {
+            WritableArray deviceArray = new WritableNativeArray();
+            
+            if (connectedDevice != null) {
+                WritableMap deviceMap = new WritableNativeMap();
+                deviceMap.putString("id", connectedDevice.getAddress());
+                deviceMap.putString("name", connectedDevice.getName() != null ? connectedDevice.getName() : "Unknown");
+                deviceMap.putString("address", connectedDevice.getAddress());
+                deviceArray.pushMap(deviceMap);
+            }
+            
+            promise.resolve(deviceArray);
+            Log.d(TAG, "Retrieved connected devices list");
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting connected devices", e);
+            promise.reject("GET_DEVICES_ERROR", "Failed to get connected devices: " + e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void disconnect(Promise promise) {
+        // Alias for disconnectDevice to match MacrotellectLinkService expectations
+        disconnectDevice(promise);
     }
 
     private void setupConnectionAndEEGListeners() {

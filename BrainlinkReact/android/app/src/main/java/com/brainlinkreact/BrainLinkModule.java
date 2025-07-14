@@ -14,9 +14,11 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 // MacrotellectLink SDK imports
 import com.boby.bluetoothconnect.BlueManager;
 import com.boby.bluetoothconnect.classic.listener.OnSearchDeviceListener;
-import com.boby.bluetoothconnect.device.BlueConnectDevice;
+import com.boby.bluetoothconnect.classic.bean.BlueConnectDevice;
+import android.bluetooth.BluetoothDevice;
 
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * React Native bridge for MacrotellectLink SDK
@@ -78,14 +80,14 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
             // Set up the search device listener
             blueManager.setOnSearchDeviceListener(new OnSearchDeviceListener() {
                 @Override
-                public void onSearchStarted() {
-                    Log.d(TAG, "Device search started");
+                public void onStartDiscovery() {
+                    Log.d(TAG, "Device discovery started");
                     sendEvent("DeviceSearchStarted", null);
                 }
 
                 @Override
-                public void onDeviceFound(BlueConnectDevice device) {
-                    Log.d(TAG, "Device found: " + device.getName());
+                public void onNewDeviceFound(BluetoothDevice device) {
+                    Log.d(TAG, "New device found: " + device.getName());
                     
                     WritableMap deviceInfo = Arguments.createMap();
                     deviceInfo.putString("name", device.getName());
@@ -95,9 +97,35 @@ public class BrainLinkModule extends ReactContextBaseJavaModule {
                 }
 
                 @Override
-                public void onSearchFinished() {
-                    Log.d(TAG, "Device search finished");
-                    sendEvent("DeviceSearchFinished", null);
+                public void onSearchCompleted(List<BlueConnectDevice> pairedDevices, List<BlueConnectDevice> unpairedDevices) {
+                    Log.d(TAG, "Device search completed - Paired: " + pairedDevices.size() + ", Unpaired: " + unpairedDevices.size());
+                    
+                    WritableMap result = Arguments.createMap();
+                    result.putInt("pairedCount", pairedDevices.size());
+                    result.putInt("unpairedCount", unpairedDevices.size());
+                    
+                    sendEvent("DeviceSearchFinished", result);
+                }
+
+                @Override
+                public void onNewBoundNewDevice(BlueConnectDevice device) {
+                    Log.d(TAG, "New bound device: " + device.getName());
+                    
+                    WritableMap deviceInfo = Arguments.createMap();
+                    deviceInfo.putString("name", device.getName());
+                    deviceInfo.putString("address", device.getAddress());
+                    
+                    sendEvent("DeviceBound", deviceInfo);
+                }
+
+                @Override
+                public void onError(String error) {
+                    Log.e(TAG, "Search error: " + error);
+                    
+                    WritableMap errorInfo = Arguments.createMap();
+                    errorInfo.putString("error", error);
+                    
+                    sendEvent("DeviceSearchError", errorInfo);
                 }
             });
             

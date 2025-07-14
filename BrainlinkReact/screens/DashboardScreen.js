@@ -36,21 +36,14 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
   });
   const [isRecording, setIsRecording] = useState(false);
   const [showDeviceList, setShowDeviceList] = useState(false);
-  const [authorizedDevices, setAuthorizedDevices] = useState([]);
 
   useEffect(() => {
     // Initialize MacrotellectLink service
     MacrotellectLinkService.initialize();
     
-    // Get authorized devices list
-    const updateAuthorizedDevices = () => {
-      const hwids = MacrotellectLinkService.getAuthorizedHWIDs();
-      setAuthorizedDevices(hwids);
-      console.log('📱 Authorized devices updated in UI:', hwids);
-    };
-    
-    // Initial load
-    updateAuthorizedDevices();
+    // Note: MacrotellectLink SDK handles device authorization automatically via Bluetooth
+    // No need to fetch authorized devices list - SDK validates during scan/connect
+    console.log('📱 MacrotellectLink SDK will handle device authorization automatically');
     
     // Set up data listener
     const unsubscribe = MacrotellectLinkService.onDataReceived((data) => {
@@ -63,16 +56,8 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
     };
   }, []);
 
-  // Update authorized devices when user changes (e.g., after login)
-  useEffect(() => {
-    if (user && user.token) {
-      setTimeout(() => {
-        const hwids = MacrotellectLinkService.getAuthorizedHWIDs();
-        setAuthorizedDevices(hwids);
-        console.log('📱 Authorized devices refreshed after user change:', hwids);
-      }, 1000); // Small delay to ensure API call completes
-    }
-  }, [user]);
+  // Note: MacrotellectLink SDK handles device authorization automatically via Bluetooth
+  // No need to refresh authorized devices list - SDK validates during scan/connect
 
   const handleEEGData = (rawData) => {
     try {
@@ -104,8 +89,7 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
     
     // Log device details for debugging
     console.log('📱 Device selected:', device.name);
-    console.log('📱 Device HWID:', device.hwid || 'Unknown');
-    console.log('📱 Authorized HWIDs:', authorizedDevices);
+    console.log('📱 MacrotellectLink SDK will handle device authorization automatically');
     
     const deviceMessage = device.hwid ? 
       `Connected to ${device.name}\nHWID: ${device.hwid}` : 
@@ -217,32 +201,16 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
           onDeviceSelected={handleDeviceSelected}
         />
 
-        {/* Authorized Devices Section */}
+        {/* MacrotellectLink SDK Status */}
         <View style={styles.statusCard}>
-          <Text style={styles.cardTitle}>Device Authorization</Text>
-          {authorizedDevices.length > 0 ? (
-            <View>
-              <Text style={styles.statusText}>
-                Authorized BrainLink devices ({authorizedDevices.length}):
-              </Text>
-              {authorizedDevices.map((hwid, index) => (
-                <View key={index} style={styles.deviceItem}>
-                  <View style={[styles.statusIndicator, { backgroundColor: COLORS.success }]} />
-                  <Text style={styles.deviceHwid}>HWID: {hwid}</Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <View>
-              <View style={styles.statusRow}>
-                <View style={[styles.statusIndicator, { backgroundColor: COLORS.warning }]} />
-                <Text style={styles.statusText}>No authorized devices found</Text>
-              </View>
-              <Text style={styles.instructionText}>
-                Contact your administrator to authorize BrainLink devices for your account.
-              </Text>
-            </View>
-          )}
+          <Text style={styles.cardTitle}>MacrotellectLink SDK</Text>
+          <View style={styles.statusRow}>
+            <View style={[styles.statusIndicator, { backgroundColor: COLORS.success }]} />
+            <Text style={styles.statusText}>SDK handles device authorization automatically via Bluetooth</Text>
+          </View>
+          <Text style={styles.instructionText}>
+            The MacrotellectLink SDK will automatically detect and connect to authorized BrainLink devices during scan.
+          </Text>
         </View>{/* EEG Chart */}
         {isConnected && (
           <EEGChart 

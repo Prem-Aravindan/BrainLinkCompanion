@@ -507,10 +507,13 @@ class MacrotellectLinkService {
   /**
    * Get authorized device HWIDs for the current user
    * Compatible with BluetoothService API
+   * 
+   * NOTE: MacrotellectLink SDK handles device authorization automatically via Bluetooth.
+   * No API calls needed - the SDK validates devices internally during scan/connect.
    */
   getAuthorizedHWIDs() {
-    // For now, return empty array since MacrotellectLink SDK handles authorization internally
-    // In the future, this could fetch from ApiService if needed for UI display
+    // MacrotellectLink SDK handles authorization internally - no API calls needed
+    console.log('📋 MacrotellectLink SDK handles device authorization automatically via Bluetooth');
     return [];
   }
 

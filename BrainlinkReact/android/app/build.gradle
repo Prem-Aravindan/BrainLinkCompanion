@@ -151,8 +151,8 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
-    // MacrotellectLink SDK dependency
-    implementation files('libs/MacrotellectLink_V1.4.3.jar')
+    // MacrotellectLink SDK dependency - use absolute path for EAS build compatibility
+    implementation files("$projectDir/libs/MacrotellectLink_V1.4.3.jar")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

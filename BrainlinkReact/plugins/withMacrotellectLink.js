@@ -143,12 +143,12 @@ import com.brainlinkreact.BrainLinkPackage`
 
     // Add required permissions for BLE and location
     const permissions = [
-      'android.permission.BLUETOOTH',
-      'android.permission.BLUETOOTH_ADMIN',
-      'android.permission.ACCESS_COARSE_LOCATION',
-      'android.permission.ACCESS_FINE_LOCATION',
-      'android.permission.BLUETOOTH_SCAN',
-      'android.permission.BLUETOOTH_CONNECT',
+      { name: 'android.permission.BLUETOOTH' },
+      { name: 'android.permission.BLUETOOTH_ADMIN' },
+      { name: 'android.permission.ACCESS_COARSE_LOCATION' },
+      { name: 'android.permission.ACCESS_FINE_LOCATION' },
+      { name: 'android.permission.BLUETOOTH_SCAN', usesPermissionFlags: 'neverForLocation' },
+      { name: 'android.permission.BLUETOOTH_CONNECT', usesPermissionFlags: 'neverForLocation' },
     ];
 
     if (!manifest['uses-permission']) {
@@ -157,13 +157,20 @@ import com.brainlinkreact.BrainLinkPackage`
 
     permissions.forEach((permission) => {
       const hasPermission = manifest['uses-permission'].some(
-        (perm) => perm.$['android:name'] === permission
+        (perm) => perm.$['android:name'] === permission.name
       );
 
       if (!hasPermission) {
-        manifest['uses-permission'].push({
-          $: { 'android:name': permission },
-        });
+        const permissionNode = {
+          $: { 'android:name': permission.name },
+        };
+        
+        // Add usesPermissionFlags for Android 12+ permissions
+        if (permission.usesPermissionFlags) {
+          permissionNode.$['android:usesPermissionFlags'] = permission.usesPermissionFlags;
+        }
+        
+        manifest['uses-permission'].push(permissionNode);
       }
     });
 

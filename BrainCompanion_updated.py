@@ -31,9 +31,11 @@ try:
 except ImportError:
     # Set up PyQtGraph for better display compatibility
     pg.setConfigOption('useOpenGL', False)  # Disable OpenGL for better compatibility
-    pg.setConfigOption('antialias', False)  # Disable antialiasing for better performance
+    pg.setConfigOption('antialias', True)   # Enable antialiasing for smoother graphics
     pg.setConfigOption('background', 'k')   # Black background
     pg.setConfigOption('foreground', 'w')   # White foreground
+    pg.setConfigOption('crashWarning', True)  # Enable crash warnings
+    pg.setConfigOption('imageAxisOrder', 'row-major')  # Prevent axis order issues
     print("Using default PyQtGraph configuration with display compatibility settings")
 
 # Import winreg only on Windows
@@ -463,14 +465,26 @@ class MainWindow(QMainWindow):
         self.theta_plot_widget.setLabel('left', 'Theta Contribution', '%')
         self.theta_plot_widget.setLabel('bottom', 'Time (seconds)')
         self.theta_plot_widget.setTitle('Theta Contribution (% of Total Brain Activity)')
-        self.theta_curve = self.theta_plot_widget.plot([], [], pen=pg.mkPen('y', width=2))
+        
+        # Set fixed Y-axis range to prevent constant scaling
+        self.theta_plot_widget.setYRange(0, 50, padding=0)
+        
+        # Set initial X-axis range (will be updated as data comes in)
+        self.theta_plot_widget.setXRange(0, 60, padding=0)
+        
+        # Disable auto-scaling to prevent constant rescaling
+        self.theta_plot_widget.enableAutoRange(enable=False)
+        
+        # Create the curve with initial empty data
+        self.theta_curve = self.theta_plot_widget.plot([0], [0], pen=pg.mkPen('y', width=2))
 
         # Add reference lines directly to the theta contribution plot
         for pos, color, label in [(25, 'g', "Kids Range Lower"), (30, 'g', "Kids Range Upper"), (5, 'b', "Adult Range Lower"), (10, 'b', "Adult Range Upper")]:
             line = pg.InfiniteLine(pos=pos, angle=0, pen=pg.mkPen(color, width=2, style=Qt.DashLine))
             self.theta_plot_widget.addItem(line)
+            # Create text items with proper positioning to avoid null pointer errors
             text = pg.TextItem(label, color=color, anchor=(0, 1 if 'Upper' in label else 0))
-            text.setPos(0, pos)
+            text.setPos(1, pos)  # Set to x=1 instead of x=0 to avoid potential issues
             self.theta_plot_widget.addItem(text)
 
         plots_layout.addWidget(self.theta_plot_widget)
@@ -478,16 +492,19 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(plots_layout)
         
         # Initialize theta contribution buffer for plotting (separate theta plot)
-        self.theta_power_buffer = []
-        self.theta_time_buffer = []
+        self.theta_power_buffer = [0]  # Start with initial value
+        self.theta_time_buffer = [0]   # Start with initial time
         self.plot_start_time = time.time()
         
         # Initialize buffers for live theta percentage on raw EEG plot
-        self.live_theta_buffer = []
-        self.live_sample_buffer = []
+        self.live_theta_buffer = [0]   # Start with initial value
+        self.live_sample_buffer = [0]  # Start with initial sample
         
         # Initialize buffer for theta SNR
-        self.live_snr_buffer = []
+        self.live_snr_buffer = [0]     # Start with initial value
+        
+        # Initialize smoothing variable
+        self.smoothed_theta_contribution = 0
         
         # Add log area to the layout
         main_layout.addWidget(self.log_area)
@@ -522,6 +539,26 @@ class MainWindow(QMainWindow):
     def update_live_plot(self):
         global live_data_buffer
         if len(live_data_buffer) < 3:
+            # If no data, still update the plot with zero values to prevent scaling issues
+            current_time = time.time() - self.plot_start_time
+            self.theta_power_buffer.append(0)
+            self.theta_time_buffer.append(current_time)
+            
+            # Keep only last 60 seconds of data (60 points at 1 Hz)
+            if len(self.theta_power_buffer) > 60:
+                self.theta_power_buffer = self.theta_power_buffer[-60:]
+                self.theta_time_buffer = self.theta_time_buffer[-60:]
+            
+            # Update the plot with current data
+            if len(self.theta_time_buffer) > 0 and len(self.theta_power_buffer) > 0:
+                self.theta_curve.setData(self.theta_time_buffer, self.theta_power_buffer)
+                # Update X-axis range to follow the data
+                if len(self.theta_time_buffer) > 1:
+                    x_min = max(0, self.theta_time_buffer[-1] - 60)  # Show last 60 seconds
+                    x_max = max(60, self.theta_time_buffer[-1])
+                    self.theta_plot_widget.setXRange(x_min, x_max, padding=0)
+            
+            self.log_message("Waiting for EEG data...")
             return
         
         # Process the data as before...
@@ -577,7 +614,7 @@ class MainWindow(QMainWindow):
 
         # Apply exponential smoothing to theta contribution
         alpha = 0.3  # smoothing factor, adjust as needed
-        if hasattr(self, 'smoothed_theta_contribution'):
+        if hasattr(self, 'smoothed_theta_contribution') and self.smoothed_theta_contribution is not None:
             theta_contribution = alpha * theta_contribution + (1 - alpha) * self.smoothed_theta_contribution
         self.smoothed_theta_contribution = theta_contribution
 
@@ -609,13 +646,25 @@ class MainWindow(QMainWindow):
         current_time = time.time() - self.plot_start_time
         self.theta_power_buffer.append(theta_contribution)
         self.theta_time_buffer.append(current_time)
-          # Keep only last 60 seconds of data (60 points at 1 Hz)
+        
+        # Keep only last 60 seconds of data (60 points at 1 Hz)
         if len(self.theta_power_buffer) > 60:
             self.theta_power_buffer = self.theta_power_buffer[-60:]
             self.theta_time_buffer = self.theta_time_buffer[-60:]
         
-        # Update theta contribution plot
-        self.theta_curve.setData(self.theta_time_buffer, self.theta_power_buffer)
+        # Update theta contribution plot only if we have valid data
+        if len(self.theta_time_buffer) > 0 and len(self.theta_power_buffer) > 0:
+            try:
+                self.theta_curve.setData(self.theta_time_buffer, self.theta_power_buffer)
+                # Update X-axis range to follow the data, showing last 60 seconds
+                if len(self.theta_time_buffer) > 1:
+                    x_min = max(0, self.theta_time_buffer[-1] - 60)
+                    x_max = max(60, self.theta_time_buffer[-1])
+                    self.theta_plot_widget.setXRange(x_min, x_max, padding=0)
+            except Exception as e:
+                print(f"Error updating plot: {e}")
+                # Reset the curve if there's an error
+                self.theta_curve.setData([current_time], [theta_contribution])
         
         # Simplified logging with single theta contribution value plus live metrics
         peak_snr_display = f"{theta_peak_snr_val:.2f}" if np.isfinite(theta_peak_snr_val) else "∞"
@@ -663,8 +712,8 @@ class MainWindow(QMainWindow):
             login_url = "https://en.mindspeller.com/api/cas/token/login"
             self.log_message("Using EN environment")
         elif self.radio_nl.isChecked():
-            BACKEND_URL = "https://nl.mindspeller.com/api/cas/brainlink_data"
-            login_url = "https://nl.mindspeller.com/api/cas/token/login"
+            BACKEND_URL = "https://stg-nl.mindspell.be/api/cas/brainlink_data"
+            login_url = "https://stg-nl.mindspell.be/api/cas/token/login"
             self.log_message("Using NL environment")
         else:
             BACKEND_URL = "http://127.0.0.1:5000/api/cas/brainlink_data"
@@ -861,7 +910,7 @@ class MainWindow(QMainWindow):
         # Test connections to endpoints
         test_urls = [
             "https://en.mindspeller.com/api/cas/token/login",
-            "https://nl.mindspeller.com/api/cas/token/login",
+            "https://stg-nl.mindspell.be/api/cas/token/login",
             "http://127.0.0.1:5000/api/cas/token/login"
         ]
         
@@ -945,7 +994,7 @@ class MainWindow(QMainWindow):
                 if ok2:
                     login_urls = [
                         "https://en.mindspeller.com/api/cas/token/login",
-                        "https://nl.mindspeller.com/api/cas/token/login"
+                        "https://stg-nl.mindspell.be/api/cas/token/login"
                     ]
                     
                     for login_url in login_urls:

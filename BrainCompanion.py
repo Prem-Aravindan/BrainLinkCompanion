@@ -503,8 +503,8 @@ class MainWindow(QMainWindow):
             login_url = "https://en.mindspeller.com/api/cas/token/login"
             self.log_message("Using EN environment")
         elif self.radio_nl.isChecked():
-            BACKEND_URL = "https://nl.mindspeller.com/api/cas/brainlink_data"
-            login_url = "https://nl.mindspeller.com/api/cas/token/login"
+            BACKEND_URL = "https://stg-nl.mindspell.be/api/cas/brainlink_data"
+            login_url = "https://stg-nl.mindspell.be/api/cas/token/login"
             self.log_message("Using NL environment")
         else:
             BACKEND_URL = "http://127.0.0.1:5000/api/cas/brainlink_data"

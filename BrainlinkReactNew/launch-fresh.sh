@@ -1,0 +1,46 @@
+#!/bin/bash
+# Fresh App Launch - Enhanced BrainLink with Service Ready Events
+echo "🚀 Fresh Enhanced BrainLink App Launch"
+echo "======================================="
+echo "📱 Target: Pixel 9 Pro (Real Device)"
+echo "🔧 Features: Enhanced SDK + Service Ready Events + Retry Logic"
+echo "⏰ $(date)"
+echo ""
+
+echo "📋 Pre-Launch Checklist:"
+echo "✅ Metro server running with fresh cache"
+echo "✅ Enhanced MacrotellectLink SDK implementation ready"
+echo "✅ Service declaration in AndroidManifest.xml"
+echo "✅ Early initialization in index.js"
+echo "✅ Retry logic with exponential backoff"
+echo "✅ DirectBLE fallback system"
+echo ""
+
+echo "🔧 Connect Your Pixel 9 Pro:"
+echo "1. Make sure your Pixel 9 Pro is connected to same WiFi"
+echo "2. Enable Developer Options and USB Debugging"
+echo "3. Connect via USB or Wireless Debugging"
+echo "4. Install the APK if not already installed"
+echo ""
+
+echo "🎯 Expected Log Messages (Watch Metro console):"
+echo "- '🔥 Early MacrotellectLink SDK initialization...'"
+echo "- '🔥 MacrotellectLink SDK service ready'"
+echo "- '✅ Service ready event received'"
+echo "- '🔍 Scan attempt 1/5...'"
+echo "- Enhanced test suite results"
+echo ""
+
+echo "📱 APK Location for Installation:"
+echo "android/app/build/outputs/apk/debug/app-debug.apk"
+echo ""
+
+echo "🧪 Testing Commands:"
+echo "- Enhanced SDK tests will run automatically"
+echo "- Watch for service ready events"
+echo "- Test BrainLink device scanning"
+echo "- Verify retry logic and DirectBLE fallback"
+echo ""
+
+echo "✅ Ready to launch enhanced BrainLink app!"
+echo "Open the app on your Pixel 9 Pro and watch the Metro logs..."

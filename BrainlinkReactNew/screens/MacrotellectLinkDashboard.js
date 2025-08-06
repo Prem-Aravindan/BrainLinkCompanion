@@ -2442,7 +2442,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
 
           {/* NAVIGATION SECTION */}
           <View style={styles.navigationSection}>
-            <Text style={styles.navigationTitle}>View Options</Text>
+            {/* <Text style={styles.navigationTitle}>View Options</Text> */}
             <View style={styles.navigationButtons}>
               <TouchableOpacity 
                 style={[
@@ -2459,7 +2459,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                 </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity 
+              {/* <TouchableOpacity 
                 style={[
                   styles.navButton, 
                   currentScreen === 'realtime' && styles.navButtonActive
@@ -2472,9 +2472,9 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                 ]}>
                   512Hz Real-Time
                 </Text>
-              </TouchableOpacity>
+              </TouchableOpacity> */}
 
-              <TouchableOpacity 
+              {/* <TouchableOpacity 
                 style={[
                   styles.navButton, 
                   currentScreen === 'sdk-test' && styles.navButtonActive
@@ -2487,7 +2487,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                 ]}>
                   SDK Test
                 </Text>
-              </TouchableOpacity>
+              </TouchableOpacity> */}
             </View>
           </View>
           {/* LIGHTNING-FAST DISCONNECT BUTTON - COMPLETELY ISOLATED FROM DATA PROCESSING */}
@@ -2521,24 +2521,40 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
               </TouchableOpacity>
             </View>
           )}
+        </View>
+
+        {/* 512Hz Real-Time EEG Display - Full height section like real-time screen */}
+        {connectionStatus === 'connected' && (
+          <View style={styles.realTimeEegSection}>
+            <RealTimeEEGDisplay 
+              data={realTimeEegData}
+              isConnected={isConnected}
+              deviceInfo={connectedDevice}
+            />
+          </View>
+        )}
+
+        {/* Connection Status Card - Continue with debug info */}
+        <View style={styles.statusCard}>
           {/* Production Debug Info - Clean & Minimal */}
           <View style={styles.debugContainer}>
-            <Text style={styles.debugTitle}>Connection Status:</Text>
-            <Text style={styles.debugText}>Status: {connectionStatus}</Text>
-            <Text style={styles.debugText}>SDK Initialized: {sdkInitialized ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>Scanning: {isScanning ? 'Yes' : 'No'}</Text>
+            <Text style={[styles.debugTitle, {color: '#000'}]}>Connection Status:</Text>
+            <Text style={[styles.debugTitle, {color: '#000'}]}>Status: {connectionStatus}</Text>
+            <Text style={[styles.debugTitle, {color: '#000'}]}>SDK Initialized: {sdkInitialized ? 'Yes' : 'No'}</Text>
+            {/* <Text style={styles.debugText}>Scanning: {isScanning ? 'Yes' : 'No'}</Text>
             <Text style={styles.debugText}>Connected: {isConnected ? 'Yes' : 'No'}</Text>
             <Text style={styles.debugText}>Data Rate: {dataRate}Hz</Text>
             <Text style={styles.debugText}>Samples: {realTimeEegData.length}</Text>
             <Text style={styles.debugText}>Device: {connectedDevice?.name || 'None'}</Text>
             <Text style={styles.debugText}>Last Update: {detailedEEGData.lastUpdateTime || 'Never'}</Text>
             <Text style={styles.debugText}>Devices Found (Hook): {devices?.length || 0}</Text>
-            <Text style={styles.debugText}>Devices Found (Local): {localDevices?.length || 0}</Text>
+            <Text style={styles.debugText}>Devices Found (Local): {localDevices?.length || 0}</Text> */}
             {/* POST-RELOAD DETECTION INDICATOR */}
             <Text style={[styles.debugText, { 
-              color: isPostReloadDetected ? '#ff9500' : '#666',
+              color: isPostReloadDetected ? '#ff9500' : '#000',
               fontWeight: isPostReloadDetected ? 'bold' : 'normal'
             }]}>
+              
               Post-Reload Mode: {isPostReloadDetected ? 'ACTIVE' : 'Inactive'}
             </Text>
             {devices?.length > 0 && (
@@ -2547,7 +2563,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             {localDevices?.length > 0 && (
               <Text style={styles.debugText}>Local Devices: {localDevices.map(d => d.name || d.mac || 'Unknown').join(', ')}</Text>
             )}
-            <Text style={styles.debugText}>Post-Reload Mode: {isPostReload ? 'Yes' : 'No'}</Text>
+            <Text style={[styles.debugTitle, {color: '#000'}]}>Post-Reload Mode: {isPostReload ? 'Yes' : 'No'}</Text>
             {/* Force BLE Reset Button for debugging */}
             <TouchableOpacity style={styles.forceResetButton} onPress={async () => {
               console.log('🚨 MANUAL COMPREHENSIVE BLE RESET TRIGGERED');
@@ -2613,21 +2629,6 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             </TouchableOpacity>
           </View>
         </View>
-
-        {/* BREAKTHROUGH: 512Hz Real-Time EEG Display - PRESERVE AT ALL COSTS */}
-        {isConnected && realTimeEegData.length > 0 && (
-          <View style={styles.realTimeEegCard}>
-            <Text style={styles.cardTitle}>🔥 BREAKTHROUGH: 512Hz Real-Time EEG Stream</Text>
-            <Text style={styles.realTimeCardSubtitle}>
-              Live high-frequency raw EEG data at actual sampling rate
-            </Text>
-            <RealTimeEEGDisplay 
-              data={realTimeEegData}
-              isConnected={isConnected}
-              deviceInfo={connectedDevice}
-            />
-          </View>
-        )}
 
         {/* Device Selection Card - Shows available devices for connection */}
         {(devices && devices.length > 0) && connectionStatus !== 'connected' && (
@@ -2771,14 +2772,14 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         )}
         
         {/* DEBUG INFO - to help troubleshoot */}
-        <View style={styles.debugCard}>
+        {/* <View style={styles.debugCard}>
           <Text style={styles.cardTitle}>Debug Info</Text>
           <Text style={styles.debugText}>Connection Status: {connectionStatus}</Text>
           <Text style={styles.debugText}>Raw Signal Buffer: {rawSignalBuffer.length} samples</Text>
           <Text style={styles.debugText}>Filtered Signal Buffer: {filteredSignalBuffer.length} samples</Text>
           <Text style={styles.debugText}>Last Update: {detailedEEGData.lastUpdateTime || 'None'}</Text>
           <Text style={styles.debugText}>Raw Buffer Internal: {rawBufferRef.current?.length || 0} samples</Text>
-        </View>
+        </View> */}
 
         {/* PYTHON-STYLE DUAL RAW SIGNAL PLOTS - Clean implementation */}
         {rawSignalBuffer.length > 0 && (
@@ -3364,6 +3365,18 @@ const styles = StyleSheet.create({
     elevation: 8,
     borderWidth: 2,
     borderColor: '#00ff00', // Green border to highlight this breakthrough
+  },
+  realTimeEegSection: {
+    height: 400, // Give it substantial height like the real-time screen
+    marginBottom: 16,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    shadowColor: '#00ff00',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
   },
   realTimeCardSubtitle: {
     fontSize: 14,

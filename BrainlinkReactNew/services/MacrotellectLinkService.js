@@ -340,7 +340,7 @@ class MacrotellectLinkService {
     try {
       console.log('🔌 Disconnecting from device:', deviceId);
       
-      const result = await BrainLinkModule.disconnect(deviceId);
+      const result = await BrainLinkModule.disconnect();
       
       // Remove from connected devices
       this.connectedDevices = this.connectedDevices.filter(d => d.id !== deviceId);

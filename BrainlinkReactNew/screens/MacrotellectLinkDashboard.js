@@ -845,7 +845,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                 console.log(`🔌 Found ${connectedDevices.length} connected devices, disconnecting...`);
                 for (const device of connectedDevices) {
                   if (BrainLinkModule?.disconnectDevice) {
-                    await BrainLinkModule.disconnectDevice(device.mac || device.address);
+                    await BrainLinkModule.disconnectDevice();
                     console.log(`✅ Disconnected device: ${device.name || device.mac}`);
                   }
                 }

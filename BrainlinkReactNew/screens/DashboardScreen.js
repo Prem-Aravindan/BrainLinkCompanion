@@ -10,6 +10,7 @@ import {
   SafeAreaView,
   StatusBar,
   DeviceEventEmitter,
+  Image,
 } from 'react-native';
 import { Dimensions } from 'react-native';
 import { COLORS, EEG_CONFIG } from '../constants';
@@ -19,6 +20,7 @@ import EEGProcessor from '../utils/EEGProcessor';
 import EEGChart from '../components/EEGChart';
 import { BandPowerDisplay } from '../components/BandPowerDisplay';
 import DeviceListModal from '../components/DeviceListModal';
+import AppLogo from '../components/AppLogo';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -334,9 +336,16 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
       
       {/* Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>BrainLink Dashboard</Text>
-          <Text style={styles.headerSubtitle}>Welcome, {username}</Text>
+        <View style={styles.headerLeft}>
+          <AppLogo 
+            size="small" 
+            showText={false} 
+            logoStyle={styles.headerLogo}
+          />
+          <View>
+            <Text style={styles.headerTitle}>BrainLink Dashboard</Text>
+            <Text style={styles.headerSubtitle}>Welcome, {username}</Text>
+          </View>
         </View>
         <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
           <Text style={styles.logoutText}>Logout</Text>
@@ -544,162 +553,223 @@ const DashboardScreen = ({ user = {}, onLogout }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#0a0a0f', // Modern dark background
   },
   header: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 20,
-    paddingVertical: 15,
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
+    paddingHorizontal: 24,
+    paddingVertical: 18,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    shadowColor: '#2196F3',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerLogo: {
+    width: 40,
+    height: 40,
+    marginRight: 12,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: COLORS.white,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: -0.3,
   },
   headerSubtitle: {
     fontSize: 14,
-    color: COLORS.white,
-    opacity: 0.8,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontWeight: '500',
   },
   logoutButton: {
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(244, 67, 54, 0.15)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 67, 54, 0.3)',
   },
   logoutText: {
-    color: COLORS.white,
-    fontWeight: '500',
+    color: '#ff5252',
+    fontWeight: '600',
+    fontSize: 14,
   },
   content: {
     flex: 1,
     padding: 20,
   },
+  // Modern Status Card with Glassmorphism
   statusCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
     marginBottom: 20,
-    elevation: 3,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },  chartCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 20,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
+  // Modern Chart Card
+  chartCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  // Modern Instructions Card
   instructionsCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 20,
-    elevation: 3,
+    backgroundColor: 'rgba(33, 150, 243, 0.08)',
+    borderRadius: 20,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(33, 150, 243, 0.15)',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowRadius: 8,
+    elevation: 4,
   },
+  // Modern Detailed Data Card
   detailedDataCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
     marginBottom: 20,
-    elevation: 3,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowRadius: 12,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   dataSection: {
-    marginVertical: 10,
+    marginVertical: 12,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: COLORS.primary,
-    marginBottom: 8,
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 12,
+    letterSpacing: -0.2,
   },
   dataRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
   },
   dataLabel: {
     fontSize: 14,
-    color: COLORS.textSecondary,
+    color: 'rgba(255, 255, 255, 0.7)',
     flex: 1,
+    fontWeight: '500',
   },
   dataValue: {
     fontSize: 14,
     fontWeight: '600',
-    color: COLORS.text,
+    color: '#ffffff',
     textAlign: 'right',
   },
   cardTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    marginBottom: 15,
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 16,
+    letterSpacing: -0.3,
   },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 15,
+    marginBottom: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    padding: 12,
+    borderRadius: 12,
   },
   statusIndicator: {
     width: 12,
     height: 12,
     borderRadius: 6,
-    marginRight: 10,
+    marginRight: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 2,
   },
   statusText: {
     fontSize: 16,
-    color: COLORS.text,
+    color: '#ffffff',
+    fontWeight: '500',
   },
   buttonRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginHorizontal: -6,
   },
+  // Modern Button Styling
   button: {
     paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingVertical: 14,
+    borderRadius: 16,
     alignItems: 'center',
     flex: 1,
-    marginHorizontal: 5,
+    marginHorizontal: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
   },
   connectButton: {
-    backgroundColor: COLORS.primary,
+    backgroundColor: 'rgba(76, 175, 80, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(76, 175, 80, 0.3)',
   },
   disconnectButton: {
-    backgroundColor: COLORS.error,
+    backgroundColor: 'rgba(244, 67, 54, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(244, 67, 54, 0.3)',
   },
   recordButton: {
-    backgroundColor: COLORS.success,
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(33, 150, 243, 0.3)',
   },
   stopButton: {
-    backgroundColor: COLORS.warning,
+    backgroundColor: 'rgba(255, 152, 0, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 152, 0, 0.3)',
   },
   buttonText: {
-    color: COLORS.white,
-    fontWeight: '500',
+    color: '#ffffff',
+    fontWeight: '600',
     fontSize: 16,
+    letterSpacing: 0.3,
   },
   instructionText: {
     fontSize: 14,
-    color: COLORS.text,
-    lineHeight: 20,
+    color: 'rgba(255, 255, 255, 0.8)',
+    lineHeight: 22,
+    fontWeight: '400',
   },
   deviceItem: {
     flexDirection: 'row',

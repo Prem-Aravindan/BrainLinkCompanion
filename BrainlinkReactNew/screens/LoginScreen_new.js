@@ -10,11 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Image,
 } from 'react-native';
 import { COLORS, API_CONFIG } from '../constants';
 import ApiService from '../services/ApiService';
-import AppLogo from '../components/AppLogo';
 
 const LoginScreen = ({ onLogin }) => {
   const [username, setUsername] = useState('');
@@ -25,8 +23,9 @@ const LoginScreen = ({ onLogin }) => {
   const [currentStep, setCurrentStep] = useState('environment'); // 'environment' or 'login'
 
   const environments = [
-    { key: 'EN_PROD', label: 'EN-Mindspeller' },
-    { key: 'NL_PROD', label: 'NL-Mindspeller(staging)' },
+    { key: 'EN_PROD', label: 'EN (PROD Environment)' },
+    { key: 'NL_PROD', label: 'NL (PROD Environment)' },
+    { key: 'LOCAL', label: 'Local (127.0.0.1:5000)' },
   ];
 
   const handleEnvironmentSelection = () => {
@@ -85,8 +84,7 @@ const LoginScreen = ({ onLogin }) => {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
-        {/* App Logo */}
-        <AppLogo size="large" containerStyle={styles.logoContainer} />
+        <Text style={styles.title}>BrainLink Companion</Text>
         
         {/* Step Indicator */}
         <View style={styles.stepIndicator}>
@@ -215,8 +213,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
-  logoContainer: {
+  title: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#ffffff',
+    textAlign: 'center',
     marginBottom: 48,
+    letterSpacing: -0.5,
+    textShadowColor: 'rgba(255, 255, 255, 0.2)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   // Step Indicator Styles
   stepIndicator: {

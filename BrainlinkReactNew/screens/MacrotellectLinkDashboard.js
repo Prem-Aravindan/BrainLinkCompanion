@@ -22,6 +22,7 @@ import EEGChart from '../components/EEGChart';
 import RealTimeEEGDisplay from '../components/RealTimeEEGDisplay';
 import MacrotellectLinkService from '../services/MacrotellectLinkService';
 import MacrotellectLinkSDKTest from './MacrotellectLinkSDKTest';
+import AppLogo from '../components/AppLogo';
 const { BrainLinkModule } = NativeModules;
 export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   // Navigation state
@@ -224,10 +225,10 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   };
   // Memoized values to prevent unnecessary re-renders and improve button responsiveness
   const localConnectionColor = useMemo(() => {
-    if (sdkError) return '#F44336'; // Red for errors
-    if (!sdkInitialized) return '#FF9800'; // Orange for not initialized
-    if (connectionStatus === 'connected') return '#4CAF50'; // Green for connected
-    return '#2196F3'; // Blue for ready
+    if (sdkError) return 'rgba(244, 67, 54, 0.8)'; // Modern red for errors
+    if (!sdkInitialized) return 'rgba(255, 152, 0, 0.8)'; // Modern orange for not initialized
+    if (connectionStatus === 'connected') return 'rgba(76, 175, 80, 0.8)'; // Modern green for connected
+    return 'rgba(33, 150, 243, 0.8)'; // Modern blue for ready
   }, [sdkError, sdkInitialized, connectionStatus]);
   const localConnectionStatusText = useMemo(() => {
     if (sdkError) return 'SDK ERROR';
@@ -256,9 +257,9 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
       text: isDisconnecting ? 'Disconnecting...' :
             isConnected ? 'Disconnect Device' : 
             isCurrentlyScanning ? 'Stop Scan' : 'Start Scan',
-      color: isDisconnecting ? '#FF5722' :
-             isConnected ? '#F44336' : 
-             isCurrentlyScanning ? '#FF9800' : '#4CAF50',
+      color: isDisconnecting ? 'rgba(255, 87, 34, 0.8)' :
+             isConnected ? 'rgba(244, 67, 54, 0.8)' : 
+             isCurrentlyScanning ? 'rgba(255, 152, 0, 0.8)' : 'rgba(76, 175, 80, 0.8)',
       disabled: !isSdkReady || isDisconnecting,
       isConnected: isConnected,
       isDisconnecting: isDisconnecting
@@ -296,13 +297,13 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   const getConnectionModeColor = () => {
     switch (connectionMode) {
       case 'REAL_DATA_MODE':
-        return '#4CAF50'; // Green for real data
+        return 'rgba(76, 175, 80, 0.8)'; // Modern green for real data
       case 'SDK_NOT_INITIALIZED':
-        return '#FF9800'; // Orange for not initialized
+        return 'rgba(255, 152, 0, 0.8)'; // Modern orange for not initialized
       case 'SDK_UNAVAILABLE':
-        return '#F44336'; // Red for unavailable
+        return 'rgba(244, 67, 54, 0.8)'; // Modern red for unavailable
       default:
-        return '#9E9E9E'; // Gray for unknown
+        return 'rgba(158, 158, 158, 0.8)'; // Modern gray for unknown
     }
   };
   // COMPREHENSIVE SCAN BUTTON WITH COMPLETE STATE RESET - FIXES POST-RELOAD DETECTION
@@ -796,6 +797,12 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   }, []);
   // Initialize SDK on component mount - STRICT INITIALIZATION
   useEffect(() => {
+    // Track app start time for proper post-reload detection
+    if (!window.appStartTime) {
+      window.appStartTime = Date.now();
+      console.log('📱 App start time recorded:', new Date(window.appStartTime).toISOString());
+    }
+    
     const initializeSDK = async () => {
       try {
         console.log('🔧 Initializing MacrotellectLink SDK with strict state clearing...');
@@ -1126,8 +1133,11 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
           // REMOVED LOG: console.log('📊 [BrainLinkData EVENT] Raw event data (throttled):' - to see sampling rate from Android
           
           // AUTO-DETECT CONNECTION: If we're receiving data, we must be connected
-          // Update connection status automatically
-          if (connectionStatus !== 'connected' && !window.disconnectionTimer) {
+          // But ONLY if we're not already handling a disconnection event
+          if (connectionStatus !== 'connected' && 
+              connectionStatus !== 'connecting' && 
+              !window.disconnectionTimer &&
+              !window.isHandlingDisconnection) {
             console.log('🔗 Auto-detecting connection from data flow - setting status to connected');
             setConnectionStatus('connected');
             // Clear any connection retry counters since we have data
@@ -1287,6 +1297,10 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             setConnectionStatus('connecting');
           } else if (status.isConnected === false || status.status === 'disconnected') {
             console.log('⚠️ Device disconnection detected:', status.reason);
+            
+            // Prevent race conditions by marking that we're handling disconnection
+            window.isHandlingDisconnection = true;
+            
             // CONNECTION STABILITY: Don't immediately disconnect on first signal loss
             // Many BLE devices have brief connection drops that recover automatically
             if (status.reason && (
@@ -1296,53 +1310,53 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
               status.reason.includes('Signal lost')
             )) {
               console.log('🔄 Temporary connection issue detected - analyzing context...');
-              // POST-RELOAD SPECIAL HANDLING: Different strategy for post-reload disconnections
-              if (isPostReloadDetected) {
-                console.log('🔄 POST-RELOAD: Connection lost after Metro reload - initiating enhanced recovery...');
-                // For post-reload scenarios, use shorter timeout and more aggressive recovery
+              
+              // IMPROVED POST-RELOAD DETECTION: Only trigger if we're actually in post-reload state
+              // AND it's been less than 30 seconds since app start
+              const timeSinceAppStart = Date.now() - (window.appStartTime || Date.now());
+              const isActualPostReload = isPostReloadDetected && timeSinceAppStart < 30000;
+              
+              if (isActualPostReload) {
+                console.log('🔄 POST-RELOAD: Recent app start detected - using enhanced recovery...');
+                // For recent post-reload scenarios, use shorter timeout
                 if (window.disconnectionTimer) {
                   clearTimeout(window.disconnectionTimer);
                 }
                 window.disconnectionTimer = setTimeout(async () => {
-                  console.log('🔄 POST-RELOAD: Starting BLE stack reset and reconnection...');
+                  console.log('🔄 POST-RELOAD: Starting gentle reconnection attempt...');
                   try {
-                    // Reset BLE stack for clean state
-                    if (BrainLinkModule.resetBLEStack) {
-                      await BrainLinkModule.resetBLEStack();
-                      console.log('✅ POST-RELOAD: BLE stack reset complete');
-                    }
-                    // Clear timers and counters
+                    // Don't reset entire BLE stack - just clear state
                     setConnectionStatus('disconnected');
                     window.disconnectionTimer = null;
                     window.connectionRetryCount = 0;
-                    // Brief delay before allowing new connections
-                    setTimeout(() => {
-                      console.log('🔗 POST-RELOAD: Ready for new connection attempts');
-                    }, 1000);
+                    window.isHandlingDisconnection = false;
+                    console.log('🔗 POST-RELOAD: Ready for reconnection');
                   } catch (error) {
-                    console.log('⚠️ POST-RELOAD: BLE reset failed:', error.message);
+                    console.log('⚠️ POST-RELOAD: Recovery failed:', error.message);
                     setConnectionStatus('disconnected');
                     window.disconnectionTimer = null;
                     window.connectionRetryCount = 0;
+                    window.isHandlingDisconnection = false;
                   }
-                }, 3000); // Shorter timeout for post-reload scenarios
+                }, 4000); // 4 second timeout for post-reload scenarios
               } else {
-                // Normal scenario - longer wait for natural recovery
-                console.log('🔄 Normal scenario - giving device time to stabilize...');
-                // DISABLED: Don't do immediate reconnection as it might interfere with device stability
-                console.log('⚠️ Immediate reconnection disabled to prevent connection conflicts');
+                // Normal scenario - give device time to self-recover
+                console.log('🔄 Normal disconnection - allowing natural recovery time...');
+                
                 // Initialize retry counter if needed
                 if (!window.connectionRetryCount) window.connectionRetryCount = 0;
-                // Give the device more time to self-recover before attempting reconnection
+                
+                // Give the device time to self-recover before declaring disconnection
                 if (window.disconnectionTimer) {
                   clearTimeout(window.disconnectionTimer);
                 }
                 window.disconnectionTimer = setTimeout(() => {
-                  console.log('❌ Connection stabilization timeout - marking as disconnected');
+                  console.log('❌ Connection recovery timeout - marking as disconnected');
                   setConnectionStatus('disconnected');
                   window.disconnectionTimer = null;
                   window.connectionRetryCount = 0;
-                }, 8000); // 8 second wait for natural recovery
+                  window.isHandlingDisconnection = false;
+                }, 6000); // 6 second wait for natural recovery (reduced from 8s)
               }
             } else {
               // Immediate disconnection for intentional disconnects or other errors
@@ -1353,6 +1367,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                 window.disconnectionTimer = null;
               }
               window.connectionRetryCount = 0;
+              window.isHandlingDisconnection = false;
             }
           }
         });
@@ -1685,7 +1700,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
       setLastDataTime(new Date());
     }
   }, [hookEegData]);
-  // Monitor devices from hook for debugging + aggressive rediscovery
+  // Monitor devices from hook for debugging + rediscovery
   useEffect(() => {
     if (devices && devices.length > 0) {
       console.log('📱 DEVICES UPDATED via hook:', devices.length, 'devices found');
@@ -1698,15 +1713,17 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
       });
     } else if (devices) {
       console.log('📱 No devices found in hook (devices array exists but empty)');
-      // AGGRESSIVE REDISCOVERY: If scanning but no devices found, try additional methods
-      if (connectionStatus === 'scanning') {
-        console.log('🔄 Scanning active but no devices - trying aggressive rediscovery...');
+      // REDUCED AGGRESSIVE REDISCOVERY: Only if scanning and not handling disconnection
+      if (connectionStatus === 'scanning' && 
+          !window.isHandlingDisconnection && 
+          !window.disconnectionTimer) {
+        console.log('🔄 Scanning active but no devices - trying gentle rediscovery...');
         setTimeout(() => {
           tryAggressiveDeviceDiscovery();
-        }, 2000);
+        }, 3000); // Increased delay to 3 seconds
       }
     } else {
-      console.log('📱 Devices array is null/undefined from hook');
+      console.log('📱 Devices array is null/undefined from hook (normal during disconnection recovery)');
     }
   }, [devices, connectionStatus]);
   // Aggressive device discovery helper
@@ -2426,7 +2443,14 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
       <ScrollView style={styles.scrollView}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>BrainLink Live Dashboard</Text>
+          <View style={styles.headerLeft}>
+            <AppLogo 
+              size="small" 
+              showText={false} 
+              logoStyle={styles.headerLogo}
+            />
+            <Text style={styles.headerTitle}>MindLink Dashboard</Text>
+          </View>
           <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
             <Text style={styles.logoutButtonText}>Logout</Text>
           </TouchableOpacity>
@@ -2538,9 +2562,9 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         <View style={styles.statusCard}>
           {/* Production Debug Info - Clean & Minimal */}
           <View style={styles.debugContainer}>
-            <Text style={[styles.debugTitle, {color: '#000'}]}>Connection Status:</Text>
-            <Text style={[styles.debugTitle, {color: '#000'}]}>Status: {connectionStatus}</Text>
-            <Text style={[styles.debugTitle, {color: '#000'}]}>SDK Initialized: {sdkInitialized ? 'Yes' : 'No'}</Text>
+            <Text style={[styles.debugTitle, {color: '#fff', fontWeight: 'bold'}]}>Connection Status:</Text>
+            <Text style={[styles.debugTitle, {color: '#ff9500'}]}>Status: {connectionStatus}</Text>
+            <Text style={[styles.debugTitle, {color: '#ff9500'}]}>SDK Initialized: {sdkInitialized ? 'Yes' : 'No'}</Text>
             {/* <Text style={styles.debugText}>Scanning: {isScanning ? 'Yes' : 'No'}</Text>
             <Text style={styles.debugText}>Connected: {isConnected ? 'Yes' : 'No'}</Text>
             <Text style={styles.debugText}>Data Rate: {dataRate}Hz</Text>
@@ -2563,7 +2587,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             {localDevices?.length > 0 && (
               <Text style={styles.debugText}>Local Devices: {localDevices.map(d => d.name || d.mac || 'Unknown').join(', ')}</Text>
             )}
-            <Text style={[styles.debugTitle, {color: '#000'}]}>Post-Reload Mode: {isPostReload ? 'Yes' : 'No'}</Text>
+            <Text style={[styles.debugTitle, {color: '#ff9500'}]}>Post-Reload Mode: {isPostReload ? 'Yes' : 'No'}</Text>
             {/* Force BLE Reset Button for debugging */}
             <TouchableOpacity style={styles.forceResetButton} onPress={async () => {
               console.log('🚨 MANUAL COMPREHENSIVE BLE RESET TRIGGERED');
@@ -3112,10 +3136,10 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         {/* Instructions */}
         <View style={styles.instructionsCard}>
           <Text style={styles.cardTitle}>Instructions</Text>
-          <Text style={styles.instructionText}>• Turn on your BrainLink device</Text>
-          <Text style={styles.instructionText}>• Tap "Start Scan" to search for devices</Text>
+          <Text style={styles.instructionText}>• Turn on your BrainLink device and wear it</Text>
+          {/* <Text style={styles.instructionText}>• Tap "Start Scan" to search for devices</Text> */}
           <Text style={styles.instructionText}>• Ensure good contact with forehead</Text>
-          <Text style={styles.instructionText}>• Signal quality should be green for best results</Text>
+          <Text style={styles.instructionText}>• Tap "Start Scan" to search for devices</Text>
         </View>
       </ScrollView>
     </View>
@@ -3124,470 +3148,771 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#0a0a0f',
   },
   scrollView: {
     flex: 1,
-    padding: 16,
+    padding: 20,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 24,
+    paddingHorizontal: 4,
   },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333',
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
     flex: 1,
   },
+  headerLogo: {
+    width: 32,
+    height: 32,
+    marginRight: 12,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#ffffff',
+    flex: 1,
+    letterSpacing: -0.5,
+  },
   logoutButton: {
-    backgroundColor: '#F44336',
-    padding: 12,
-    borderRadius: 8,
+    backgroundColor: 'rgba(244, 67, 54, 0.15)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 67, 54, 0.3)',
   },
   logoutButtonText: {
-    color: 'white',
+    color: '#ff5252',
     fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '600',
   },
-  // Status Card
+  // Modern Status Card with Glassmorphism
   statusCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   statusHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
   },
   statusTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#ffffff',
+    letterSpacing: -0.3,
   },
   statusIndicator: {
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 20,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   statusText: {
     color: 'white',
     fontSize: 12,
-    fontWeight: 'bold',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
+  // Modern Button Design
   scanButton: {
-    paddingVertical: 16,
-    borderRadius: 12,
+    paddingVertical: 18,
+    borderRadius: 16,
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
   },
   scanButtonText: {
     color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   errorContainer: {
-    backgroundColor: '#ffebee',
-    padding: 12,
-    borderRadius: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 67, 54, 0.2)',
   },
   errorText: {
-    color: '#d32f2f',
+    color: '#ff5252',
     fontSize: 14,
+    fontWeight: '500',
+  },
+  // Modern Navigation
+  navigationSection: {
+    marginBottom: 20,
+  },
+  navigationTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 12,
+    opacity: 0.8,
+  },
+  navigationButtons: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 14,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  navButton: {
     flex: 1,
-  },
-  retryButton: {
-    backgroundColor: '#2196F3',
-    padding: 8,
-    borderRadius: 6,
-  },
-  retryButtonText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  debugContainer: {
-    backgroundColor: '#f0f0f0',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 12,
-  },
-  debugTitle: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 8,
-  },
-  debugText: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 4,
-  },
-  forceResetButton: {
-    backgroundColor: '#FF5722',
-    padding: 10,
-    borderRadius: 6,
-    marginTop: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
     alignItems: 'center',
+    transition: 'all 0.2s ease',
   },
-  forceResetButtonText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  androidLogButton: {
-    backgroundColor: '#2196F3',
-    padding: 10,
-    borderRadius: 6,
-    marginTop: 8,
-    alignItems: 'center',
-  },
-  // Device Selection Card
-  deviceSelectionCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
+  navButtonActive: {
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
+    shadowColor: '#2196F3',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 3,
   },
-  deviceSelectionSubtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 16,
-    textAlign: 'center',
+  navButtonText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.6)',
+    textTransform: 'capitalize',
   },
-  deviceItem: {
+  navButtonActiveText: {
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  // Modern Cards
+  dataCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 16,
+    letterSpacing: -0.2,
+  },
+  // EEG Metrics Grid
+  metricsGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    marginHorizontal: -8,
+  },
+  metricCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 16,
     padding: 16,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
+    margin: 8,
+    flex: 1,
+    minWidth: '42%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  metricLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    fontWeight: '500',
+  },
+  metricValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: -0.3,
+  },
+  metricUnit: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 2,
+  },
+  // Chart Container
+  chartContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  chartTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  chartSubtitle: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  chartContent: {
+    height: 200,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 12,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
-  deviceInfo: {
+  chartFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  chartInfo: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '500',
+  },
+  // Instructions Card
+  instructionsCard: {
+    backgroundColor: 'rgba(33, 150, 243, 0.08)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(33, 150, 243, 0.15)',
+  },
+  instructionText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.8)',
+    marginBottom: 8,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  // Band Power Cards
+  bandPowersContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -6,
+  },
+  bandPowerCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 16,
+    padding: 16,
+    margin: 6,
     flex: 1,
+    minWidth: '28%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  bandLabel: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    fontWeight: '600',
+  },
+  bandValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: -0.2,
+  },
+  // Signal Quality Indicator
+  signalQuality: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  signalDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  signalText: {
+    fontSize: 14,
+    color: '#ffffff',
+    fontWeight: '500',
+  },
+  // Debug Info
+  debugContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  debugTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 8,
+  },
+  debugText: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontFamily: 'monospace',
+    lineHeight: 16,
+  },
+  // Device List
+  deviceItem: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   deviceName: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
+    fontWeight: '600',
+    color: '#ffffff',
     marginBottom: 4,
   },
   deviceMac: {
     fontSize: 12,
-    color: '#666',
-    marginBottom: 2,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontFamily: 'monospace',
+  },
+  connectButton: {
+    backgroundColor: 'rgba(76, 175, 80, 0.8)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  connectButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  // Loading States
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0a0a0f',
+  },
+  loadingText: {
+    color: '#ffffff',
+    fontSize: 16,
+    marginTop: 16,
+    opacity: 0.7,
+  },
+  // Modern Error States
+  errorContainer2: {
+    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+    padding: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 67, 54, 0.2)',
+  },
+  errorText: {
+    color: '#ff5252',
+    fontSize: 14,
+    flex: 1,
+    fontWeight: '500',
+  },
+  retryButton: {
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  forceResetButton: {
+    backgroundColor: 'rgba(255, 87, 34, 0.8)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginTop: 8,
+    alignItems: 'center',
+    shadowColor: '#FF5722',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  forceResetButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  androidLogButton: {
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginTop: 8,
+    alignItems: 'center',
+    shadowColor: '#2196F3',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  // Modern Device Selection Card
+  deviceSelectionCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  deviceSelectionSubtitle: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 20,
+    textAlign: 'center',
+    fontWeight: '400',
+  },
+  deviceInfo: {
+    flex: 1,
   },
   deviceRssi: {
     fontSize: 11,
-    color: '#999',
+    color: 'rgba(255, 255, 255, 0.4)',
+    fontWeight: '500',
   },
   deviceConnectButton: {
-    backgroundColor: '#2196F3',
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+    shadowColor: '#2196F3',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   deviceConnectText: {
-    color: 'white',
+    color: '#ffffff',
     fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '600',
   },
   deviceSelectionHint: {
     fontSize: 12,
-    color: '#999',
+    color: 'rgba(255, 255, 255, 0.5)',
     textAlign: 'center',
     fontStyle: 'italic',
-    marginTop: 8,
+    marginTop: 12,
   },
   troubleshootingSection: {
-    backgroundColor: '#fff3cd',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 12,
+    backgroundColor: 'rgba(255, 193, 7, 0.1)',
+    padding: 16,
+    borderRadius: 12,
+    marginTop: 16,
     borderLeftWidth: 4,
-    borderLeftColor: '#ffc107',
+    borderLeftColor: 'rgba(255, 193, 7, 0.6)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 193, 7, 0.15)',
   },
   troubleshootingTitle: {
     fontSize: 14,
-    fontWeight: 'bold',
-    color: '#856404',
+    fontWeight: '600',
+    color: 'rgba(255, 193, 7, 0.9)',
     marginBottom: 8,
   },
   troubleshootingText: {
     fontSize: 12,
-    color: '#856404',
+    color: 'rgba(255, 193, 7, 0.8)',
     marginBottom: 4,
-    lineHeight: 16,
+    lineHeight: 18,
+    fontWeight: '400',
   },
-  // Cards
+  // Modern Metrics Cards
   metricsCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowRadius: 12,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
-  // BREAKTHROUGH: Real-Time EEG Display Card - PRESERVE STYLING
+  // BREAKTHROUGH: Modernized Real-Time EEG Display Card
   realTimeEegCard: {
-    backgroundColor: '#000', // Black background to match the breakthrough component
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
+    backgroundColor: 'rgba(0, 255, 0, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
     shadowColor: '#00ff00',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 10,
     borderWidth: 2,
-    borderColor: '#00ff00', // Green border to highlight this breakthrough
+    borderColor: 'rgba(0, 255, 0, 0.3)',
   },
   realTimeEegSection: {
-    height: 400, // Give it substantial height like the real-time screen
+    height: 400,
     marginBottom: 16,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#000',
-    shadowColor: '#00ff00',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 255, 0, 0.2)',
   },
   realTimeCardSubtitle: {
     fontSize: 14,
-    color: '#00ff00',
+    color: '#00ff88',
     marginBottom: 16,
     fontStyle: 'italic',
     textAlign: 'center',
-    fontWeight: '600',
+    fontWeight: '500',
   },
   bandPowersCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowRadius: 12,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
-  chartCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  instructionsCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 16,
-  },
-  // Metrics
+  // Advanced Metrics
   metricsGrid: {
     gap: 16,
   },
   metricRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 20,
   },
   metricItem: {
     flex: 1,
     alignItems: 'center',
     marginHorizontal: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
   },
   metricLabel: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
     marginBottom: 8,
     textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    fontWeight: '500',
   },
   metricValue: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 8,
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 4,
+    color: '#ffffff',
+    letterSpacing: -0.5,
   },
   metricSubtext: {
-    fontSize: 12,
-    color: '#999',
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.4)',
     textAlign: 'center',
+    fontWeight: '400',
   },
   metricBar: {
     width: '100%',
-    height: 8,
-    backgroundColor: '#e0e0e0',
-    borderRadius: 4,
+    height: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 3,
     overflow: 'hidden',
     marginTop: 8,
   },
   metricFill: {
     height: '100%',
-    borderRadius: 4,
+    borderRadius: 3,
   },
-  // Band Powers
+  // Band Powers Grid
   bandPowersGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
+    marginHorizontal: -6,
   },
   bandSection: {
-    marginBottom: 20,
+    marginBottom: 24,
   },
   bandSectionTitle: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 12,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 16,
     textAlign: 'center',
+    letterSpacing: -0.2,
   },
   bandItem: {
     width: '30%',
     alignItems: 'center',
     marginBottom: 16,
-    padding: 12,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-  },
-  bandLabel: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 4,
-  },
-  bandValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#2196F3',
-    marginBottom: 4,
+    margin: 6,
+    padding: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
   },
   bandFreq: {
     fontSize: 10,
-    color: '#666',
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginTop: 4,
+    fontWeight: '500',
   },
   bandType: {
     fontSize: 9,
-    color: '#999',
+    color: 'rgba(255, 255, 255, 0.4)',
     fontStyle: 'italic',
+    marginTop: 2,
   },
-  // Advanced Metrics
+  // Advanced Metrics Grid
   advancedMetricsGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginHorizontal: -6,
   },
   advancedMetricItem: {
     flex: 1,
     alignItems: 'center',
-    marginHorizontal: 4,
-    padding: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
+    marginHorizontal: 6,
+    padding: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   advancedMetricLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 4,
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginBottom: 8,
     textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    fontWeight: '500',
   },
   advancedMetricValue: {
     fontSize: 18,
-    fontWeight: 'bold',
+    fontWeight: '700',
     marginBottom: 4,
+    color: '#ffffff',
+    letterSpacing: -0.3,
   },
   advancedMetricDesc: {
     fontSize: 9,
-    color: '#999',
+    color: 'rgba(255, 255, 255, 0.4)',
     textAlign: 'center',
+    lineHeight: 12,
   },
-  // Chart
-  chartContainer: {
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    padding: 16,
-  },
+  // Modern Chart Styling
   chartSubtitle: {
     fontSize: 12,
-    color: '#666',
+    color: 'rgba(255, 255, 255, 0.6)',
     textAlign: 'center',
-    marginBottom: 8,
-    fontStyle: 'italic',
-  },
-  chartHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: 12,
+    fontStyle: 'italic',
+    fontWeight: '400',
   },
   chartLabel: {
     fontSize: 14,
-    fontWeight: 'bold',
-    color: '#333',
+    fontWeight: '600',
+    color: '#ffffff',
   },
   chartCurrent: {
     fontSize: 14,
-    color: '#FF9800',
-    fontWeight: 'bold',
+    color: '#ff9800',
+    fontWeight: '600',
   },
   chartSamples: {
     fontSize: 12,
-    color: '#666',
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontWeight: '400',
   },
-  // Theta Contribution Chart (Python-style)
+  // Theta Chart Styling
   thetaChartArea: {
     height: 120,
-    backgroundColor: 'white',
-    borderRadius: 6,
-    padding: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 12,
+    padding: 12,
     position: 'relative',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   referenceLine: {
     position: 'absolute',
     left: 0,
     right: 0,
     height: 1,
-    opacity: 0.7,
+    opacity: 0.4,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
   },
   referenceLineLabel: {
     fontSize: 8,
@@ -3806,12 +4131,43 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#333',
     flexDirection: 'row',
+    color: 'rgba(255, 255, 255, 0.5)',
+    position: 'absolute',
+    right: 8,
+    fontWeight: '500',
+  },
+  // Signal display
+  signalStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    padding: 20,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  statItem: {
     alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    fontWeight: '500',
+  },
+  statValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: -0.2,
   },
   referenceText: {
     fontSize: 10,
-    color: '#888',
+    color: 'rgba(255, 255, 255, 0.5)',
     marginLeft: 4,
+    fontWeight: '500',
   },
   signalTrace: {
     position: 'absolute',
@@ -3822,26 +4178,12 @@ const styles = StyleSheet.create({
   },
   signalPoint: {
     position: 'absolute',
-    borderRadius: 1,
-  },
-  signalStats: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    backgroundColor: '#f8f9fa',
-    padding: 16,
-    borderRadius: 8,
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 4,
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    shadowColor: '#ffffff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 2,
   },
 });
 

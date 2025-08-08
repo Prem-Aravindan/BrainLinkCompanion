@@ -10,11 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Image,
 } from 'react-native';
 import { COLORS, API_CONFIG } from '../constants';
 import ApiService from '../services/ApiService';
-import AppLogo from '../components/AppLogo';
 
 const LoginScreen = ({ onLogin }) => {
   const [username, setUsername] = useState('');
@@ -25,8 +23,9 @@ const LoginScreen = ({ onLogin }) => {
   const [currentStep, setCurrentStep] = useState('environment'); // 'environment' or 'login'
 
   const environments = [
-    { key: 'EN_PROD', label: 'EN-Mindspeller' },
-    { key: 'NL_PROD', label: 'NL-Mindspeller(staging)' },
+    { key: 'EN_PROD', label: 'EN (PROD Environment)' },
+    { key: 'NL_PROD', label: 'NL (PROD Environment)' },
+    { key: 'LOCAL', label: 'Local (127.0.0.1:5000)' },
   ];
 
   const handleEnvironmentSelection = () => {
@@ -85,8 +84,7 @@ const LoginScreen = ({ onLogin }) => {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
-        {/* App Logo */}
-        <AppLogo size="large" containerStyle={styles.logoContainer} />
+        <Text style={styles.title}>BrainLink Companion</Text>
         
         {/* Step Indicator */}
         <View style={styles.stepIndicator}>
@@ -200,6 +198,76 @@ const LoginScreen = ({ onLogin }) => {
             </TouchableOpacity>
           </View>
         )}
+        
+        {/* Original content - will be removed in next step */}
+        {false && (
+        <View>
+        {/* Environment Selection */}
+        <View style={styles.environmentContainer}>
+          <Text style={styles.sectionTitle}>Select Environment</Text>
+          {environments.map((env) => (
+            <TouchableOpacity
+              key={env.key}
+              style={[
+                styles.environmentOption,
+                environment === env.key && styles.environmentSelected
+              ]}
+              onPress={() => setEnvironment(env.key)}
+            >
+              <View style={[
+                styles.radio,
+                environment === env.key && styles.radioSelected
+              ]}>
+                {environment === env.key && <View style={styles.radioInner} />}
+              </View>
+              <Text style={styles.environmentText}>{env.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Login Form */}
+        <View style={styles.formContainer}>
+          <TextInput
+            style={styles.input}
+            placeholder="Username"
+            placeholderTextColor="rgba(255, 255, 255, 0.5)"
+            value={username}
+            onChangeText={setUsername}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          
+          <View style={styles.passwordContainer}>
+            <TextInput
+              style={styles.passwordInput}
+              placeholder="Password"
+              placeholderTextColor="rgba(255, 255, 255, 0.5)"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity
+              style={styles.eyeButton}
+              onPress={() => setShowPassword(!showPassword)}
+            >
+              <Text style={styles.eyeText}>{showPassword ? '�' : '👁️'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.loginButton, loading && styles.loginButtonDisabled]}
+            onPress={handleLogin}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#ffffff" />
+            ) : (
+              <Text style={styles.loginButtonText}>Login</Text>
+            )}
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -215,8 +283,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
-  logoContainer: {
+  title: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#ffffff',
+    textAlign: 'center',
     marginBottom: 48,
+    letterSpacing: -0.5,
+    textShadowColor: 'rgba(255, 255, 255, 0.2)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   // Step Indicator Styles
   stepIndicator: {
@@ -348,23 +424,22 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
+    elevation: 3,
   },
+  // Modern Radio Button
   radio: {
     width: 20,
     height: 20,
     borderRadius: 10,
     borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.4)',
+    borderColor: 'rgba(255, 255, 255, 0.6)',
     marginRight: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   radioSelected: {
     borderColor: '#2196F3',
-    shadowColor: '#2196F3',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
+    backgroundColor: 'transparent',
   },
   radioInner: {
     width: 8,
@@ -373,21 +448,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#2196F3',
   },
   environmentText: {
-    fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.8)',
-    flex: 1,
-    letterSpacing: -0.1,
-  },
-  environmentTextSelected: {
     color: '#ffffff',
+    fontSize: 15,
     fontWeight: '500',
+    flex: 1,
   },
-  // Modern Glassmorphism Form Container
+  // Modern Form Container
   formContainer: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 20,
     padding: 24,
-    marginBottom: 24,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
@@ -396,66 +466,69 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
+  // Modern Input Styling
   input: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
     fontSize: 16,
     color: '#ffffff',
-    marginBottom: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
+    elevation: 2,
   },
+  // Modern Password Container
   passwordContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
     marginBottom: 24,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
+    elevation: 2,
   },
   passwordInput: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    padding: 16,
     fontSize: 16,
     color: '#ffffff',
   },
   eyeButton: {
     padding: 16,
+    borderRadius: 12,
   },
   eyeText: {
-    fontSize: 20,
+    fontSize: 18,
+    opacity: 0.7,
   },
+  // Modern Login Button
   loginButton: {
-    backgroundColor: 'linear-gradient(135deg, #2196F3, #1976D2)', // Enhanced gradient look
-    backgroundColor: '#2196F3', // Fallback for RN
-    borderRadius: 12,
-    paddingVertical: 16,
+    backgroundColor: 'rgba(33, 150, 243, 0.8)',
+    borderRadius: 16,
+    padding: 18,
     alignItems: 'center',
-    justifyContent: 'center',
     shadowColor: '#2196F3',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
     borderWidth: 1,
     borderColor: 'rgba(33, 150, 243, 0.3)',
   },
   loginButtonDisabled: {
-    backgroundColor: 'rgba(33, 150, 243, 0.3)',
-    shadowOpacity: 0,
-    borderColor: 'rgba(33, 150, 243, 0.1)',
+    backgroundColor: 'rgba(158, 158, 158, 0.3)',
+    shadowColor: 'transparent',
+    borderColor: 'rgba(158, 158, 158, 0.2)',
   },
   loginButtonText: {
     color: '#ffffff',

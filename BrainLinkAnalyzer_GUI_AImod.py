@@ -271,7 +271,6 @@ def onRaw(raw):
     
     # Show processed values in console every 50 samples
     if len(live_data_buffer) % 50 == 0:
-        print(f"\n=== EEG ANALYZER CONSOLE OUTPUT ===")
         print(f"Buffer size: {len(live_data_buffer)} samples")
         print(f"Latest raw value: {raw:.1f} µV")
         
@@ -876,21 +875,69 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget.setLabel('bottom', 'Sample Index')
         self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
         self.plot_widget.showGrid(x=True, y=True)
-        
-        # Set initial ranges manually - start with smaller, more reasonable ranges
-        self.plot_widget.setYRange(-200, 200, padding=0)  # Set initial Y range for EEG
-        self.plot_widget.setXRange(0, 50, padding=0)      # Start with 50 samples instead of 256
-            
+        # Initialize ranges and use supported APIs (no monkey-patching of autoRangeEnabled)
+        try:
+            pi = self.plot_widget.getPlotItem()
+            vb_init = pi.getViewBox()
+            vb_init.setRange(xRange=(0, 256), yRange=(-200, 200), padding=0)
+            # Disable auto-range using public methods where available
+            try:
+                # PlotItem API (newer pyqtgraph)
+                pi.enableAutoRange(x=False, y=False)
+            except Exception:
+                pass
+            try:
+                # ViewBox API (older pyqtgraph signature)
+                vb_init.enableAutoRange('xy', False)
+            except Exception:
+                try:
+                    vb_init.enableAutoRange(x=False, y=False)
+                except Exception:
+                    pass
+            # Hide overlay buttons to avoid hover paths that query auto-range state
+            try:
+                pi.hideButtons()
+            except Exception:
+                pass
+        except Exception:
+            pass
         plot_layout.addWidget(self.plot_widget)
         
-        # Create plot curve with thick green pen for visibility
-        # Use PlotCurveItem instead of plot() to avoid autoRangeEnabled issues
-        self.live_curve = pg.PlotCurveItem([], [], pen=pg.mkPen(color='lime', width=3))
-        self.plot_widget.addItem(self.live_curve)
+        # Create plot curve with thick solid green pen and small symbols for visibility
+        pen = pg.mkPen(color=(0, 255, 0, 255), width=3, style=pg.QtCore.Qt.SolidLine)
+        self.live_curve = self.plot_widget.plot([], [], pen=pen, symbol='o', symbolBrush=(0, 255, 0), symbolSize=2)
+        try:
+            # Keep line above grid and axes decorations
+            self.live_curve.setZValue(10)
+            self.live_curve.setVisible(True)
+        except Exception:
+            pass
         
-        # Ensure plot is visible
-        self.plot_widget.setAutoVisible(True)
-        self.plot_widget.setClipToView(True)
+        # Curve-side visual settings to avoid widget-level auto-range paths
+        try:
+            if hasattr(self, 'live_curve') and self.live_curve is not None:
+                # Avoid pyqtgraph autoRangeEnabled() path by disabling auto downsampling and clip-to-view
+                try:
+                    self.live_curve.setClipToView(False)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self.live_curve, 'setDownsampling'):
+                        self.live_curve.setDownsampling(auto=False)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self.live_curve, 'setAutoDownsample'):
+                        self.live_curve.setAutoDownsample(False)
+                except Exception:
+                    pass
+            # Hide overlay buttons to avoid hover code paths
+            try:
+                self.plot_widget.getPlotItem().hideButtons()
+            except Exception:
+                pass
+        except Exception:
+            pass
         
         plot_group.setLayout(plot_layout)
         layout.addWidget(plot_group)
@@ -1053,58 +1100,76 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.status_label.setText(message)
     
     def update_live_plot(self):
-        """Update live plot with EEG data - using PlotCurveItem to avoid autoRangeEnabled issues"""
+        """Update live plot with EEG data"""
         global live_data_buffer
         
         # Update plot with real data
         if len(live_data_buffer) >= 50:
             try:
-                # Get the most recent data for plotting - show more data for better visibility
-                plot_size = min(128, len(live_data_buffer))  # Reduced from 256 to 128
-                data = np.array(live_data_buffer[-plot_size:], dtype=np.float64)
+                # Get the most recent data for plotting
+                plot_size = min(256, len(live_data_buffer))
+                data = np.array(live_data_buffer[-plot_size:])
                 
                 # Create x-axis (sample indices)
-                x_data = np.arange(len(data), dtype=np.float64)
+                x_data = np.arange(len(data))
                 
-                # Update the plot curve - PlotCurveItem should avoid autoRange issues
-                self.live_curve.setData(x_data, data)
+                # Sanitize and update the plot curve with visible line
+                y = np.asarray(data, dtype=float)
+                x = np.asarray(x_data, dtype=float)
+                # Replace non-finite values to ensure drawing
+                if not np.all(np.isfinite(y)):
+                    y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+                if not np.all(np.isfinite(x)):
+                    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
                 
-                # FORCE the view ranges to exactly match our data
-                if len(data) > 0:
-                    y_min, y_max = float(np.min(data)), float(np.max(data))
-                    y_range = y_max - y_min
-                    padding = max(y_range * 0.1, 10.0) if y_range > 0 else 50.0
-                    
-                    # Force exact range matching - use multiple methods to ensure it works
-                    try:
-                        # Method 1: Direct ViewBox range setting with exact boundaries
-                        view_box = self.plot_widget.plotItem.vb
-                        view_box.setRange(
-                            xRange=[0, len(data)-1],  # Exact data boundaries
-                            yRange=[y_min - padding, y_max + padding], 
-                            padding=0,
-                            update=True
-                        )
-                        
-                        # Method 2: Also set on PlotWidget directly
-                        self.plot_widget.setXRange(0, len(data)-1, padding=0)
-                        self.plot_widget.setYRange(y_min - padding, y_max + padding, padding=0)
-                        
-                    except Exception as e:
-                        # If range setting fails, at least the data will still be plotted
-                        pass
-                
-                # Update status label with plot info
-                if hasattr(self, 'status_label') and len(data) > 0:
-                    self.status_label.setText(f"Buffer: {len(live_data_buffer)} samples | Plotting: {len(data)} points | Latest: {live_data_buffer[-1]:.1f} µV | X: 0-{len(data)-1}, Y: {y_min:.1f} to {y_max:.1f} µV")
-                
-            except Exception as e:
-                # Handle any remaining errors gracefully
+                # FORCE CURVE TO BE VISIBLE - make it unmistakable
                 try:
-                    if hasattr(self, 'status_label') and len(live_data_buffer) > 0:
-                        self.status_label.setText(f"Buffer: {len(live_data_buffer)} samples | Latest: {live_data_buffer[-1]:.1f} µV | Plot Error: {str(e)[:50]}")
+                    self.live_curve.setVisible(True)
+                    # Make sure the curve has not been cleared or replaced
+                    if self.live_curve.opts['pen'] is None:
+                        pen = pg.mkPen(color=(0, 255, 0, 255), width=5, style=pg.QtCore.Qt.SolidLine)
+                        self.live_curve.setPen(pen)
                 except Exception:
                     pass
+                
+                # Set the data with absolute certainty
+                self.live_curve.setData(x, y, connect='all')
+                
+                # Update axis ranges to make sure line is visible
+                if len(y) > 0:
+                    y_min, y_max = float(np.min(y)), float(np.max(y))
+                    y_range = y_max - y_min
+                    padding = y_range * 0.1 if y_range > 0 else 50.0
+                    
+                    # Use both methods to ensure range is set
+                    self.plot_widget.setYRange(y_min - padding, y_max + padding)
+                    self.plot_widget.setXRange(0, int(len(x)))
+                    
+                    try:
+                        pi = self.plot_widget.getPlotItem()
+                        vb = pi.getViewBox()
+                        vb.setRange(xRange=(0, int(len(x))), yRange=(y_min - padding, y_max + padding), padding=0)
+                    except Exception:
+                        pass
+                
+                # Update status label
+                if hasattr(self, 'status_label'):
+                    self.status_label.setText(f"Buffer: {len(live_data_buffer)} samples | Latest: {live_data_buffer[-1]:.1f} µV | Range: {y_min:.1f} to {y_max:.1f} µV")
+                
+            except Exception as e:
+                # Reduce spam; set status and continue. Avoid touching internal autoRange attributes.
+                try:
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText("Plot update issue; continuing...")
+                except Exception:
+                    pass
+                try:
+                    # Hide overlay buttons to avoid hover paths that may call auto-range methods
+                    self.plot_widget.getPlotItem().hideButtons()
+                except Exception:
+                    pass
+                if hasattr(self, 'status_label') and len(live_data_buffer) > 0:
+                    self.status_label.setText(f"Buffer: {len(live_data_buffer)} samples | Latest: {live_data_buffer[-1]:.1f} µV | Plot error: {e}")
         else:
             # Update status when not enough data
             if hasattr(self, 'status_label'):

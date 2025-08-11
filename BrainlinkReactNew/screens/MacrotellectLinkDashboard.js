@@ -20,10 +20,42 @@ import { useMacrotellectLink } from '../hooks/useMacrotellectLink';
 import { BandPowerDisplay } from '../components/BandPowerDisplay';
 import EEGChart from '../components/EEGChart';
 import RealTimeEEGDisplay from '../components/RealTimeEEGDisplay';
+import FilteredEEGDisplay from '../components/FilteredEEGDisplay';
 import MacrotellectLinkService from '../services/MacrotellectLinkService';
 import MacrotellectLinkSDKTest from './MacrotellectLinkSDKTest';
 import AppLogo from '../components/AppLogo';
+import backgroundDSPManager from '../utils/backgroundDSP';
+import streamingDSP from '../utils/streamingDSP';
 const { BrainLinkModule } = NativeModules;
+
+// Small, reusable battery indicator styled like a phone battery bar
+const BatteryIndicator = React.memo(({ level = 0, showPercent = true, size = 'small' }) => {
+  const pct = Math.max(0, Math.min(100, Number.isFinite(level) ? level : 0));
+  const getBatteryColor = () => {
+    if (pct > 50) return '#4CAF50';
+    if (pct > 20) return '#FF9800';
+    return '#F44336';
+  };
+  const dims = size === 'small'
+    ? { w: 26, h: 12, capW: 2, radius: 2 }
+    : { w: 36, h: 16, capW: 3, radius: 3 };
+  const fillWidth = Math.round((pct / 100) * (dims.w - 4)); // padding 2 on each side
+  const color = getBatteryColor();
+
+  return (
+    <View style={styles.batteryContainerRow}>
+      <View style={[styles.batteryIcon, { width: dims.w + dims.capW + 2, height: dims.h }]}> 
+        <View style={[styles.batteryBody, { width: dims.w, height: dims.h, borderRadius: dims.radius }]}> 
+          <View style={[styles.batteryFill, { width: fillWidth, backgroundColor: pct === 0 ? '#9E9E9E' : color }]} />
+        </View>
+        <View style={[styles.batteryCap, { width: dims.capW, height: Math.max(6, dims.h - 6) }]} />
+      </View>
+      {showPercent && (
+        <Text style={styles.batteryPercentText}>{Number.isFinite(level) ? `${pct}%` : '--%'}</Text>
+      )}
+    </View>
+  );
+});
 export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   // Navigation state
   const [currentScreen, setCurrentScreen] = useState('dashboard'); // 'dashboard', 'sdk-test', or 'realtime'
@@ -104,6 +136,17 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   });
   // Local devices state for event-based discovery
   const [localDevices, setDevices] = useState([]);
+  
+  // BACKGROUND DSP STATE - New efficient filtering system
+  const [backgroundDSPActive, setBackgroundDSPActive] = useState(false);
+  const [filteredEEGData, setFilteredEEGData] = useState([]);
+  // Throttled UI pipeline for filtered data to avoid render spikes
+  const filteredQueueRef = useRef([]);
+  const filteredFlushTimerRef = useRef(null);
+  const [dspPerformanceStats, setDspPerformanceStats] = useState(null);
+  const [showFilteredView, setShowFilteredView] = useState(false);
+  const [latestFeatures, setLatestFeatures] = useState(null);
+  
   // Track last connected device for post-reload restoration
   let lastConnectedDevice = useRef(null);
   // Track if this is a post-reload scenario for enhanced BLE reset
@@ -728,25 +771,61 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
   }, [connectionStatus, isScanning, disconnect, stopScan, startScan, clearAllData, clearAllStates, reinitializeSDK, hardReset]);
   // ULTRA-FAST EEG Data Handler - OPTIMIZED FOR 512Hz RAW DATA
   const handleEEGData = useCallback((rawData) => {
-    // ⚡ FOCUS ON RAW EEG VALUE ONLY - MAXIMUM PERFORMANCE
-    if (!rawData || rawData.rawValue === undefined) return;
+    // DEBUG: Log incoming data structure (throttled upstream)
+    console.log('📨 handleEEGData called:', { 
+      hasRawData: !!rawData, 
+      hasRawValue: rawData?.rawValue !== undefined,
+      hasBattery: (rawData?.batteryLevel !== undefined) || (rawData?.battery !== undefined) || (rawData?.batteryCapacity !== undefined) || (rawData?.type === 'battery'),
+      dataKeys: rawData ? Object.keys(rawData) : [],
+      currentScreen 
+    });
+
+    if (!rawData) return;
+
+    // Handle battery updates first (can arrive without rawValue)
+    try {
+      let batteryCandidate = undefined;
+      if (rawData.type === 'battery' && rawData.batteryLevel !== undefined) {
+        batteryCandidate = rawData.batteryLevel;
+      } else if (rawData.batteryLevel !== undefined) {
+        batteryCandidate = rawData.batteryLevel;
+      } else if (rawData.battery !== undefined) {
+        batteryCandidate = rawData.battery;
+      } else if (rawData.batteryCapacity !== undefined) { // some payloads use batteryCapacity
+        batteryCandidate = rawData.batteryCapacity;
+      }
+
+      if (batteryCandidate !== undefined) {
+        const val = getSafeNumericValue(batteryCandidate);
+        if (val >= 0 && val <= 100) {
+          setDetailedEEGData(prev => ({ ...prev, batteryLevel: val }));
+        }
+      }
+    } catch (e) {
+      // Non-fatal; ignore battery parse errors
+    }
+
+    // If this event doesn't contain raw EEG, stop here
+    if (rawData.rawValue === undefined) return;
     
     const now = Date.now();
     
-    // CRITICAL: Update real-time EEG data for 512Hz visualization
+    // CRITICAL: Update real-time EEG data for 512Hz visualization (UNCHANGED)
     setRealTimeEegData(prev => {
       const newData = [...prev, rawData.rawValue];
       // Keep last 1024 samples (2 seconds at 512Hz)
       return newData.slice(-1024);
     });
     
-    // Store in buffer for main dashboard display
+    // Store in buffer for main dashboard display (UNCHANGED)
     rawBufferRef.current.push(rawData.rawValue);
     if (rawBufferRef.current.length > maxRawBufferSize) {
       rawBufferRef.current = rawBufferRef.current.slice(-maxRawBufferSize);
     }
     
-    // Simple frequency tracking (reduced frequency to minimize overhead)
+  // BACKGROUND DSP: Raw samples are now fed in unthrottled event listeners to avoid starvation
+    
+    // Simple frequency tracking (reduced frequency to minimize overhead) (UNCHANGED)
     jsFreqSampleCount.current++;
     
     // Only update frequency every 512 samples (once per second at 512Hz)
@@ -772,7 +851,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
     }
     
     // MINIMAL UI updates for other metrics (reduced frequency)
-    if (rawData.attention !== undefined || rawData.meditation !== undefined || 
+  if (rawData.attention !== undefined || rawData.meditation !== undefined || 
         rawData.signal !== undefined || rawData.delta !== undefined) {
       // Only update every 10th sample to reduce state updates
       if (jsFreqSampleCount.current % 10 === 0) {
@@ -1068,6 +1147,66 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         setSdkInitialized(true);
         setConnectionStatus('ready'); // Only ready after initialization
         console.log('✅ MacrotellectLink SDK initialized successfully');
+        
+        // BACKGROUND DSP: Initialize efficient filtering system (DISABLED BY DEFAULT)
+        console.log('🔧 Background DSP processor initialized but INACTIVE (user must enable)');
+        try {
+          // Setup UI callback for filtered data updates - SMOOTH STREAMING like raw signal
+          const handleFilteredData = (result) => {
+            if (result && Array.isArray(result.filteredData) && result.filteredData.length > 0) {
+              // Enqueue incoming samples; avoid large prop arrays to child
+              filteredQueueRef.current.push(result.filteredData);
+            }
+            // Latest features (arrive ~every 2s)
+            if (result && result.features) {
+              setLatestFeatures(result.features);
+            }
+            // Always keep the most recent stats, but apply with the next flush to reduce renders
+            if (result && result.stats) {
+              // Store latest stats alongside queue to publish on flush
+              filteredQueueRef.current._latestStats = result.stats;
+            }
+
+            // Schedule a lightweight flush at ~20fps (every 50ms)
+            if (!filteredFlushTimerRef.current) {
+              filteredFlushTimerRef.current = setTimeout(() => {
+                try {
+                  const q = filteredQueueRef.current;
+                  if (q && q.length > 0) {
+                    // Merge queued chunks into a single small batch for the child component
+                    const merged = q.length === 1 ? q[0] : q.flat();
+                    // Pass only the latest chunk(s); FilteredEEGDisplay maintains its own rolling buffer
+                    setFilteredEEGData(merged);
+                  }
+                  // Publish latest stats, if any
+                  if (filteredQueueRef.current && filteredQueueRef.current._latestStats) {
+                    setDspPerformanceStats(filteredQueueRef.current._latestStats);
+                  }
+                } finally {
+                  // Reset queue and timer
+                  filteredQueueRef.current = [];
+                  filteredFlushTimerRef.current = null;
+                  // Clean latest stats holder
+                  if (filteredQueueRef.current && filteredQueueRef.current._latestStats) {
+                    delete filteredQueueRef.current._latestStats;
+                  }
+                }
+              }, 50); // 50ms ≈ 20fps
+            }
+          };
+          
+          // DON'T start automatically - let user enable it
+          // backgroundDSPManager.start(handleFilteredData);
+          setBackgroundDSPActive(false); // Start inactive
+          console.log('✅ Background DSP ready but inactive - will not interfere with BLE');
+          
+          // Store callback for later use
+          window.dspUICallback = handleFilteredData;
+        } catch (dspError) {
+          console.warn('⚠️ Background DSP setup failed (non-critical):', dspError.message);
+          setBackgroundDSPActive(false);
+        }
+        
         // POST-RELOAD CONNECTION RESTORATION: Check if device is already connected
         if (isPostReloadDetected && BrainLinkModule) {
           console.log('🔍 POST-RELOAD: Checking for existing device connections...');
@@ -1123,6 +1262,12 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         
         const dataListener = DeviceEventEmitter.addListener('BrainLinkData', (data) => {
           const currentTime = Date.now();
+          // Always feed DSP with raw samples (unthrottled) for full 512 Hz ingestion
+          try {
+            if (backgroundDSPManager?.isRunning && data?.rawValue !== undefined) {
+              backgroundDSPManager.addSample(data.rawValue);
+            }
+          } catch (e) { /* ignore feed errors */ }
           
           // THROTTLE: Skip processing if too frequent to prevent UI blocking
           if (currentTime - lastDataProcessTime < DATA_PROCESS_THROTTLE) {
@@ -1156,6 +1301,12 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         
         const rawDataListener = DeviceEventEmitter.addListener('EEGRawData', (data) => {
           const currentTime = Date.now();
+          // Always feed DSP first (unthrottled)
+          try {
+            if (backgroundDSPManager?.isRunning && data?.rawValue !== undefined) {
+              backgroundDSPManager.addSample(data.rawValue);
+            }
+          } catch (e) { /* ignore feed errors */ }
           
           // THROTTLE: Skip processing if too frequent to prevent UI blocking
           if (currentTime - lastRawDataTime < RAW_DATA_THROTTLE) {
@@ -1190,6 +1341,12 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
         
         const streamDataListener = DeviceEventEmitter.addListener('EEGDataStream', (data) => {
           const currentTime = Date.now();
+          // Always feed DSP first (unthrottled)
+          try {
+            if (backgroundDSPManager?.isRunning && data?.rawValue !== undefined) {
+              backgroundDSPManager.addSample(data.rawValue);
+            }
+          } catch (e) { /* ignore feed errors */ }
           
           // THROTTLE: Skip processing if too frequent to prevent UI blocking
           if (currentTime - lastStreamDataTime < STREAM_DATA_THROTTLE) {
@@ -1495,6 +1652,15 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
     // PRODUCTION CLEANUP: Comprehensive cleanup on component unmount
     return () => {
       console.log('🚨 COMPONENT UNMOUNTING - Executing production cleanup...');
+      
+      // BACKGROUND DSP: Stop background processing first
+      if (backgroundDSPActive) {
+        console.log('🛑 Stopping background DSP processor...');
+        backgroundDSPManager.stop();
+        setBackgroundDSPActive(false);
+        console.log('✅ Background DSP stopped');
+      }
+      
       // Remove event listeners immediately
       if (window.eegDataListener) {
         window.eegDataListener.remove();
@@ -2348,6 +2514,19 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
     });
     // Clear real-time data
     setRealTimeEegData([]);
+    // Clear filtered EEG data (for smooth streaming)
+    setFilteredEEGData([]);
+    // Reset throttled filtered UI pipeline
+    try {
+      if (filteredFlushTimerRef.current) {
+        clearTimeout(filteredFlushTimerRef.current);
+        filteredFlushTimerRef.current = null;
+      }
+      filteredQueueRef.current = [];
+      if (filteredQueueRef.current && filteredQueueRef.current._latestStats) {
+        delete filteredQueueRef.current._latestStats;
+      }
+    } catch {}
     // Clear theta contribution buffer (Python-style main plot)
     setThetaContributionBuffer([]);
     thetaTimeBuffer.current = [];
@@ -2374,6 +2553,22 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
     // Reset refs
     if (dataCountSinceLastCheck.current) dataCountSinceLastCheck.current = 0;
     if (lastDataRateCheck.current) lastDataRateCheck.current = Date.now();
+    
+    // Reset background DSP if active
+    try {
+      if (backgroundDSPManager) {
+        console.log('🧹 Resetting background DSP system...');
+        backgroundDSPManager.stop();
+        // Clear any queued processing data
+        if (streamingDSP && streamingDSP.reset) {
+          streamingDSP.reset();
+        }
+        console.log('✅ Background DSP reset complete');
+      }
+    } catch (error) {
+      console.warn('⚠️ DSP reset warning:', error);
+    }
+    
     console.log('✅ All EEG data cleared');
   }, []);
   // Legacy function name for backward compatibility
@@ -2427,13 +2622,120 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
           >
             <Text style={styles.backButtonText}>← Back</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>512Hz Real-Time EEG</Text>
+          <Text style={styles.headerTitle}>Filtered EEG</Text>
+          <View style={styles.headerRight}>
+            <BatteryIndicator level={detailedEEGData?.batteryLevel ?? 0} />
+            <TouchableOpacity 
+              style={[styles.toggleButton, { backgroundColor: showFilteredView ? '#9C27B0' : '#666' }]} 
+              onPress={() => setShowFilteredView(!showFilteredView)}
+            >
+              <Text style={styles.toggleButtonText}>
+                {showFilteredView ? 'Filtered' : 'Raw'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <RealTimeEEGDisplay 
-          data={realTimeEegData}
-          isConnected={isConnected}
-          deviceInfo={connectedDevice}
-        />
+        
+        <ScrollView style={styles.scrollView}>
+          {/* Raw EEG Display (unchanged) */}
+          <RealTimeEEGDisplay 
+            data={realTimeEegData}
+            isConnected={isConnected}
+            deviceInfo={connectedDevice}
+          />
+          
+          {/* Filtered EEG Display (new) */}
+          {showFilteredView && (
+            <FilteredEEGDisplay 
+              filteredData={filteredEEGData}
+              samplingRate={512}
+              isActive={backgroundDSPActive}
+              performanceStats={dspPerformanceStats}
+              latestFeatures={latestFeatures}
+            />
+          )}
+          
+          {/* DSP Controls */}
+          <View style={styles.dspControlsContainer}>
+            <Text style={styles.sectionTitle}>Background DSP Controls</Text>
+            <View style={styles.controlRow}>
+              <Text style={styles.controlLabel}>Background Filtering:</Text>
+              <TouchableOpacity 
+                style={[styles.statusButton, { backgroundColor: backgroundDSPActive ? '#4CAF50' : '#f44336' }]}
+                onPress={() => {
+                  if (backgroundDSPActive) {
+                    console.log('🛑 User stopping background DSP...');
+                    backgroundDSPManager.stop();
+                    setBackgroundDSPActive(false);
+                    console.log('✅ Background DSP stopped by user');
+                  } else {
+                    console.log('▶️ User starting background DSP...');
+                    console.log('🔧 Checking DSP requirements:', {
+                      hasCallback: !!window.dspUICallback,
+                      callbackType: typeof window.dspUICallback,
+                      managerExists: !!backgroundDSPManager,
+                      managerIsRunning: backgroundDSPManager?.isRunning
+                    });
+                    
+                    if (window.dspUICallback) {
+                      console.log('🚀 Starting background DSP manager...');
+                      backgroundDSPManager.start(window.dspUICallback);
+                      
+                      // FORCE state update immediately and verify
+                      setBackgroundDSPActive(true);
+                      
+                      // Double-check state update took effect
+                      setTimeout(() => {
+                        const actuallyRunning = backgroundDSPManager?.isRunning;
+                        console.log('✅ DSP Start Verification:', {
+                          managerRunning: actuallyRunning,
+                          stateActive: true, // This should be true now
+                          willFeedData: actuallyRunning
+                        });
+                        if (!actuallyRunning) {
+                          console.error('❌ DSP manager failed to start despite no errors');
+                        }
+                      }, 100);
+                      
+                      console.log('✅ Background DSP started by user - should now process incoming data');
+                    } else {
+                      console.error('❌ DSP UI callback not available - this should not happen');
+                    }
+                  }
+                }}
+              >
+                <Text style={styles.statusButtonText}>
+                  {backgroundDSPActive ? 'ACTIVE' : 'INACTIVE'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.controlRow}>
+              <Text style={styles.controlLabel}>Show Filtered View:</Text>
+              <TouchableOpacity 
+                style={[styles.statusButton, { backgroundColor: showFilteredView ? '#9C27B0' : '#666' }]}
+                onPress={() => setShowFilteredView(!showFilteredView)}
+              >
+                <Text style={styles.statusButtonText}>
+                  {showFilteredView ? 'ON' : 'OFF'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {dspPerformanceStats && (
+              <View style={styles.performanceStatsContainer}>
+                <Text style={styles.performanceTitle}>Performance Stats:</Text>
+                <Text style={styles.performanceText}>
+                  Avg Processing: {dspPerformanceStats.averageProcessingTime?.toFixed(2)}ms
+                </Text>
+                <Text style={styles.performanceText}>
+                  Buffer: {dspPerformanceStats.bufferUtilization?.toFixed(1)}%
+                </Text>
+                <Text style={styles.performanceText}>
+                  Samples: {dspPerformanceStats.samplesProcessed}
+                </Text>
+              </View>
+            )}
+          </View>
+        </ScrollView>
       </View>
     );
   }
@@ -2451,9 +2753,12 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             />
             <Text style={styles.headerTitle}>MindLink Dashboard</Text>
           </View>
-          <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
-            <Text style={styles.logoutButtonText}>Logout</Text>
-          </TouchableOpacity>
+          <View style={styles.headerRight}>
+            <BatteryIndicator level={detailedEEGData?.batteryLevel ?? 0} />
+            <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
+              <Text style={styles.logoutButtonText}>Logout</Text>
+            </TouchableOpacity>
+          </View>
         </View>
         {/* Connection Status Card */}
         <View style={styles.statusCard}>
@@ -2483,7 +2788,7 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                 </Text>
               </TouchableOpacity>
 
-              {/* <TouchableOpacity 
+              <TouchableOpacity 
                 style={[
                   styles.navButton, 
                   currentScreen === 'realtime' && styles.navButtonActive
@@ -2494,9 +2799,9 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
                   styles.navButtonText,
                   currentScreen === 'realtime' && styles.navButtonTextActive
                 ]}>
-                  512Hz Real-Time
+                  Filtered EEG
                 </Text>
-              </TouchableOpacity> */}
+              </TouchableOpacity>
 
               {/* <TouchableOpacity 
                 style={[
@@ -2817,20 +3122,21 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             <View style={styles.plotContainer}>
               <Text style={styles.plotTitle}>Raw EEG Signal</Text>
               <View style={styles.plotAreaPython}>
-                <Svg width="100%" height="100%" style={styles.svgPlot}>
+                <Svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none" style={styles.svgPlot}>
                   <Polyline
-                    points={rawSignalBuffer.map((value, index) => {
-                      // Auto-scaling for the plot
-                      const minVal = Math.min(...rawSignalBuffer);
-                      const maxVal = Math.max(...rawSignalBuffer);
+                    points={(() => {
+                      // Use a recent window so the line fills the graph immediately
+                      const rawWindow = rawSignalBuffer.slice(-2000); // ~4s at 512Hz
+                      if (rawWindow.length < 2) return '';
+                      const minVal = Math.min(...rawWindow);
+                      const maxVal = Math.max(...rawWindow);
                       const range = maxVal - minVal || 1;
-                      
-                      // Calculate coordinates
-                      const x = (index / (rawSignalBuffer.length - 1)) * 100;
-                      const y = 100 - ((value - minVal) / range) * 80; // 80% of height for signal, 10% margin top/bottom
-                      
-                      return `${x},${y}`;
-                    }).join(' ')}
+                      return rawWindow.map((value, index) => {
+                        const x = (index / (rawWindow.length - 1)) * 100;
+                        const y = 100 - ((value - minVal) / range) * 80; // 80% of height for signal
+                        return `${x},${y}`;
+                      }).join(' ');
+                    })()}
                     fill="none"
                     stroke="#00FF00"
                     strokeWidth="1"
@@ -2844,19 +3150,20 @@ export const MacrotellectLinkDashboard = ({ user, onLogout }) => {
             <View style={styles.plotContainer}>
               <Text style={styles.plotTitle}>Filtered EEG Signal (1-45Hz)</Text>
               <View style={styles.plotAreaPython}>
-                <Svg width="100%" height="100%" style={styles.svgPlot}>
+                <Svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none" style={styles.svgPlot}>
                   <Polyline
-                    points={filteredSignalBuffer.map((value, index) => {
-                      // Auto-scaling for filtered signal
-                      const minVal = Math.min(...filteredSignalBuffer);
-                      const maxVal = Math.max(...filteredSignalBuffer);
+                    points={(() => {
+                      const filtWindow = filteredSignalBuffer.slice(-2000); // keep in step with raw window for parity
+                      if (filtWindow.length < 2) return '';
+                      const minVal = Math.min(...filtWindow);
+                      const maxVal = Math.max(...filtWindow);
                       const range = maxVal - minVal || 1;
-                      
-                      const x = (index / (filteredSignalBuffer.length - 1)) * 100;
-                      const y = 100 - ((value - minVal) / range) * 80;
-                      
-                      return `${x},${y}`;
-                    }).join(' ')}
+                      return filtWindow.map((value, index) => {
+                        const x = (index / (filtWindow.length - 1)) * 100;
+                        const y = 100 - ((value - minVal) / range) * 80;
+                        return `${x},${y}`;
+                      }).join(' ');
+                    })()}
                     fill="none"
                     stroke="#00FFFF"
                     strokeWidth="1"
@@ -3177,6 +3484,11 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     flex: 1,
     letterSpacing: -0.5,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   logoutButton: {
     backgroundColor: 'rgba(244, 67, 54, 0.15)',
@@ -3572,6 +3884,40 @@ const styles = StyleSheet.create({
   retryButtonText: {
     color: '#ffffff',
     fontSize: 12,
+    fontWeight: '600',
+  },
+  // Battery indicator (header)
+  batteryContainerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  batteryIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  batteryBody: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.6)',
+    borderRadius: 2,
+    padding: 2,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)'
+  },
+  batteryFill: {
+    height: '100%',
+    borderRadius: 1,
+  },
+  batteryCap: {
+    marginLeft: 2,
+    backgroundColor: 'rgba(255,255,255,0.6)',
+    borderRadius: 1,
+  },
+  batteryPercentText: {
+    color: '#ffffff',
+    fontSize: 12,
+    marginLeft: 6,
+    opacity: 0.9,
     fontWeight: '600',
   },
   forceResetButton: {
@@ -4184,6 +4530,69 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 2,
+  },
+  // DSP Control Styles
+  toggleButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  toggleButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  dspControlsContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 16,
+    margin: 8,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  controlRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  controlLabel: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
+  },
+  statusButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    minWidth: 80,
+    alignItems: 'center',
+  },
+  statusButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  performanceStatsContainer: {
+    backgroundColor: '#f0f0f0',
+    borderRadius: 6,
+    padding: 12,
+    marginTop: 8,
+  },
+  performanceTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 6,
+  },
+  performanceText: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 2,
   },
 });
 

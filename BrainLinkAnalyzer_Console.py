@@ -121,7 +121,6 @@ def onRaw(raw):
     
     # Show processed values in console every 50 samples
     if len(live_data_buffer) % 50 == 0:
-        print(f"\n=== EEG ANALYZER CONSOLE OUTPUT ===")
         print(f"Buffer size: {len(live_data_buffer)} samples")
         print(f"Latest raw value: {raw:.1f} µV")
         

@@ -17,38 +17,8 @@ import ssl
 import getpass
 from collections import deque
 
-try:
-    from BrainLinkParser.BrainLinkParser import BrainLinkParser
-except ImportError:
-    print("BrainLinkParser not available. Some functionality will be limited.")
-    
-    import threading
-    import time
-    import random
-    
-    class BrainLinkParser:
-        def __init__(self, onEEG, onExtendEEG, onGyro, onRR, onRaw):
-            print("Using dummy BrainLinkParser for testing")
-            self.onRaw = onRaw
-            self.onEEG = onEEG
-            self.running = False
-            self.thread = None
-            
-        def parse(self, data):
-            # Generate dummy data for testing
-            if not self.running:
-                self.running = True
-                self.thread = threading.Thread(target=self._generate_dummy_data)
-                self.thread.daemon = True
-                self.thread.start()
-                
-        def _generate_dummy_data(self):
-            """Generate dummy EEG data for testing"""
-            while self.running:
-                # Generate realistic EEG-like data
-                dummy_raw = random.randint(-100, 100) + 50 * np.sin(time.time() * 2 * np.pi * 10)
-                self.onRaw(dummy_raw)
-                time.sleep(1/256)  # 256 Hz sampling rate
+# REAL BRAINLINK PARSER - NO DUMMY DATA ALLOWED
+from BrainLinkParser.BrainLinkParser import BrainLinkParser
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -59,6 +29,12 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QTimer, Qt, QSettings, QThread, Signal
 from PySide6.QtGui import QIcon, QFont
+# Ensure pyqtgraph uses PySide6 binding before import to avoid QWidget type mismatches
+import os as _os
+try:
+    _os.environ.setdefault('PYQTGRAPH_QT_LIB', 'PySide6')
+except Exception:
+    pass
 import pyqtgraph as pg
 from scipy.signal import butter, filtfilt, iirnotch, welch, decimate, hilbert
 from scipy.integrate import simpson as simps
@@ -261,6 +237,25 @@ def detect_brainlink():
 # Data collection callbacks from mother code
 def onRaw(raw):
     global live_data_buffer
+    
+    # CRITICAL VALIDATION: Detect if we're getting dummy data patterns
+    # Check for suspicious patterns that indicate dummy data generation
+    if hasattr(onRaw, '_last_values'):
+        onRaw._last_values.append(raw)
+        if len(onRaw._last_values) > 10:
+            onRaw._last_values = onRaw._last_values[-10:]
+            
+        # Check for unrealistic patterns (like perfect sine waves from dummy generator)
+        if len(onRaw._last_values) >= 10:
+            values = np.array(onRaw._last_values)
+            # Check for suspiciously regular patterns
+            diffs = np.diff(values)
+            if np.std(diffs) < 0.1 or np.all(np.abs(diffs) < 0.01):
+                print("WARNING: Detected potentially artificial/dummy data patterns!")
+                print("Please ensure you're connected to a REAL BrainLink device!")
+    else:
+        onRaw._last_values = [raw]
+    
     live_data_buffer.append(raw)
     if len(live_data_buffer) > 1000:
         live_data_buffer = live_data_buffer[-1000:]
@@ -733,7 +728,11 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             # Auto-connect for console output
             self.auto_connect_brainlink()
         else:
-            self.log_message("No BrainLink device found!")
+            self.log_message("ERROR: No BrainLink device found!")
+            self.log_message("CRITICAL: This application requires a real BrainLink device connected.")
+            self.log_message("Please connect your BrainLink device and restart the application.")
+            # Disable all functionality if no real device
+            self.setEnabled(False)
     
     def auto_connect_brainlink(self):
         """Auto-connect to BrainLink device for console output"""

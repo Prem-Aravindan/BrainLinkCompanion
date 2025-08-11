@@ -9,7 +9,7 @@ import {
   StyleSheet,
   ScrollView,
 } from 'react-native';
-import Svg, { Polyline } from 'react-native-svg';
+import Svg, { Polyline, Line } from 'react-native-svg';
 
 const RealTimeEEGDisplay = ({ data = [], isConnected = false, deviceInfo = null }) => {
   // Simple high-frequency data buffer - no complex calculations
@@ -25,6 +25,8 @@ const RealTimeEEGDisplay = ({ data = [], isConnected = false, deviceInfo = null 
   const maxBufferSize = 1024; // 2 seconds at 512Hz
   const plotWidth = 350;
   const plotHeight = 200;
+  // Number of recent samples to draw in the plot (default to 512 = ~1s at 512Hz)
+  const plotWindowSamples = 512;
   
   // Process incoming data - SIMPLIFIED for performance
   useEffect(() => {
@@ -56,8 +58,8 @@ const RealTimeEEGDisplay = ({ data = [], isConnected = false, deviceInfo = null 
   const generateSignalPath = () => {
     if (rawDataBuffer.length < 2) return '';
     
-    // Use only recent samples for visualization to reduce processing
-    const recentSamples = rawDataBuffer.slice(-plotWidth);
+  // Use only recent samples for visualization to reduce processing
+  const recentSamples = rawDataBuffer.slice(-plotWindowSamples);
     if (recentSamples.length < 2) return '';
     
     // Simple auto-scaling
@@ -115,26 +117,30 @@ const RealTimeEEGDisplay = ({ data = [], isConnected = false, deviceInfo = null 
       {/* High-Frequency EEG Signal Plot */}
       <View style={styles.plotContainer}>
         <Text style={styles.sectionTitle}>Live EEG Signal</Text>
-        
         {rawDataBuffer.length > 1 ? (
-          <View style={styles.svgContainer}>
-            <Svg height={plotHeight + 20} width={plotWidth + 20}>
-              {/* Signal line */}
+          <View style={styles.svgContainerMatched}>
+            <Svg width={plotWidth} height={plotHeight} style={styles.svg}>
+              {/* Grid lines to match FilteredEEGDisplay */}
+              <Line x1="0" y1={plotHeight / 2} x2={plotWidth} y2={plotHeight / 2} stroke="#E0E0E0" strokeWidth="1" strokeDasharray="5,5" />
+              <Line x1={plotWidth * 0.25} y1="0" x2={plotWidth * 0.25} y2={plotHeight} stroke="#E0E0E0" strokeWidth="1" strokeDasharray="5,5" />
+              <Line x1={plotWidth * 0.5} y1="0" x2={plotWidth * 0.5} y2={plotHeight} stroke="#E0E0E0" strokeWidth="1" strokeDasharray="5,5" />
+              <Line x1={plotWidth * 0.75} y1="0" x2={plotWidth * 0.75} y2={plotHeight} stroke="#E0E0E0" strokeWidth="1" strokeDasharray="5,5" />
+
+              {/* Signal line - blue to contrast filtered purple */}
               <Polyline
                 points={generateSignalPath()}
                 fill="none"
-                stroke="#00ff00"
-                strokeWidth="1.5"
-                transform="translate(10, 10)"
+                stroke="#2196F3"
+                strokeWidth="2"
               />
             </Svg>
-            
+
             {/* Simple signal info */}
-            <View style={styles.signalInfo}>
-              <Text style={styles.signalText}>
+            <View style={styles.signalInfoMatched}>
+              <Text style={styles.signalTextMatched}>
                 Latest: {rawDataBuffer[rawDataBuffer.length - 1]}
               </Text>
-              <Text style={styles.signalText}>
+              <Text style={styles.signalTextMatched}>
                 Range: {Math.min(...rawDataBuffer.slice(-100))} to {Math.max(...rawDataBuffer.slice(-100))}
               </Text>
             </View>
@@ -196,13 +202,13 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   metricsContainer: {
-    backgroundColor: '#1a1a1a',
+  backgroundColor: '#1a1a1a',
     padding: 15,
     borderRadius: 8,
     marginBottom: 10,
   },
   plotContainer: {
-    backgroundColor: '#1a1a1a',
+  backgroundColor: '#fff',
     padding: 15,
     borderRadius: 8,
     marginBottom: 10,
@@ -239,20 +245,28 @@ const styles = StyleSheet.create({
   normalRate: {
     color: '#ffaa00',
   },
-  svgContainer: {
+  svgContainerMatched: {
     alignItems: 'center',
-    backgroundColor: '#111',
-    borderRadius: 5,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#333',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 4,
+    padding: 8,
+    borderWidth: 0,
   },
   signalInfo: {
     marginTop: 10,
     alignItems: 'center',
   },
+  signalInfoMatched: {
+    marginTop: 10,
+    alignItems: 'center',
+  },
   signalText: {
     color: '#888',
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  signalTextMatched: {
+    color: '#666',
     fontSize: 12,
     fontFamily: 'monospace',
   },

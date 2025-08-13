@@ -264,11 +264,11 @@ def onRaw(raw):
     if hasattr(onRaw, 'feature_engine') and onRaw.feature_engine:
         onRaw.feature_engine.add_data(raw)
     
-    # Show processed values in console every 50 samples
-    if len(live_data_buffer) % 50 == 0:
-        print(f"\n=== EEG ANALYZER CONSOLE OUTPUT ===")
-        print(f"Buffer size: {len(live_data_buffer)} samples")
-        print(f"Latest raw value: {raw:.1f} µV")
+    # Show processed values in console every 50 samples (unless suppressed by enhanced GUI)
+    if len(live_data_buffer) % 50 == 0 and not getattr(onRaw, '_suppress_console', False):
+        # print(f"\n=== EEG ANALYZER CONSOLE OUTPUT ===")
+        # print(f"Buffer size: {len(live_data_buffer)} samples")
+        # print(f"Latest raw value: {raw:.1f} µV")
         
         # Process the data if we have enough samples
         if len(live_data_buffer) >= 512:
@@ -284,8 +284,8 @@ def onRaw(raw):
                 filtered = bandpass_filter(data_notched, lowcut=1.0, highcut=45.0, fs=512, order=2)
                 
                 # Compute basic statistics
-                print(f"Filtered data range: {np.min(filtered):.1f} to {np.max(filtered):.1f} µV")
-                print(f"Mean: {np.mean(filtered):.1f} µV, Std: {np.std(filtered):.1f} µV")
+                # print(f"Filtered data range: {np.min(filtered):.1f} to {np.max(filtered):.1f} µV")
+                # print(f"Mean: {np.mean(filtered):.1f} µV, Std: {np.std(filtered):.1f} µV")
                 
                 # Compute power spectral density
                 freqs, psd = compute_psd(filtered, 512)
@@ -294,11 +294,11 @@ def onRaw(raw):
                 total_power = np.var(filtered)
                 
                 # Calculate band powers
-                print(f"EEG BAND POWERS:")
+                # print(f"EEG BAND POWERS:")
                 for band_name, (low, high) in EEG_BANDS.items():
                     power = bandpower(psd, freqs, band_name)
                     relative = power / total_power if total_power > 0 else 0
-                    print(f"  {band_name.upper():5}: {power:8.2f} µV² ({relative:6.1%})")
+                    # print(f"  {band_name.upper():5}: {power:8.2f} µV² ({relative:6.1%})")
                 
                 # Calculate ratios
                 alpha_power = bandpower(psd, freqs, 'alpha')
@@ -308,27 +308,27 @@ def onRaw(raw):
                 alpha_theta_ratio = alpha_power / (theta_power + 1e-10)
                 beta_alpha_ratio = beta_power / (alpha_power + 1e-10)
                 
-                print(f"RATIOS:")
-                print(f"  Alpha/Theta: {alpha_theta_ratio:.2f}")
-                print(f"  Beta/Alpha:  {beta_alpha_ratio:.2f}")
-                print(f"  Total Power: {total_power:.2f} µV²")
+                # print(f"RATIOS:")
+                # print(f"  Alpha/Theta: {alpha_theta_ratio:.2f}")
+                # print(f"  Beta/Alpha:  {beta_alpha_ratio:.2f}")
+                # print(f"  Total Power: {total_power:.2f} µV²")
                 
                 # Mental state interpretation
                 alpha_rel = alpha_power / total_power if total_power > 0 else 0
                 theta_rel = theta_power / total_power if total_power > 0 else 0
                 beta_rel = beta_power / total_power if total_power > 0 else 0
                 
-                print(f"MENTAL STATE INTERPRETATION:")
-                if alpha_rel > 0.3:
-                    print(f"  → High alpha activity - relaxed, eyes closed state")
-                elif beta_rel > 0.3:
-                    print(f"  → High beta activity - alert, focused state")
-                elif theta_rel > 0.3:
-                    print(f"  → High theta activity - drowsy or meditative state")
-                else:
-                    print(f"  → Mixed activity - transitional state")
+                # print(f"MENTAL STATE INTERPRETATION:")
+                # if alpha_rel > 0.3:
+                #     print(f"  → High alpha activity - relaxed, eyes closed state")
+                # elif beta_rel > 0.3:
+                #     print(f"  → High beta activity - alert, focused state")
+                # elif theta_rel > 0.3:
+                #     print(f"  → High theta activity - drowsy or meditative state")
+                # else:
+                #     print(f"  → Mixed activity - transitional state")
                 
-                print(f"===================================\n")
+                # print(f"===================================\n")
                 
             except Exception as e:
                 print(f"Analysis error: {e}")
@@ -879,16 +879,41 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget.setXRange(0, 256)     # Set X range for 256 samples
         plot_layout.addWidget(self.plot_widget)
         
-        # Create plot curve with thick green pen for visibility
-        self.live_curve = self.plot_widget.plot([], [], pen=pg.mkPen(color='lime', width=3), symbol=None)
+        # Create plot curve with thick green pen for visibility - using cosmetic pen to avoid Qt6 issues
+        try:
+            pen = pg.mkPen(color='lime', width=3, cosmetic=True)
+        except Exception:
+            pen = pg.mkPen(color='lime', width=3)
         
-        # Ensure plot is visible
-        self.plot_widget.setAutoVisible(True)
-        self.plot_widget.setDownsampling(auto=True)
-        self.plot_widget.setClipToView(True)
+        # Use plot item directly to avoid autoRangeEnabled issues
+        plot_item = self.plot_widget.getPlotItem()
+        self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
+        
+        # Disable auto range to avoid Qt6 compatibility issues
+        try:
+            plot_item.enableAutoRange('x', False)
+            plot_item.enableAutoRange('y', False)
+        except Exception:
+            pass
         
         plot_group.setLayout(plot_layout)
         layout.addWidget(plot_group)
+
+        # Blink detection controls (runtime diagnostic only)
+        blink_group = QGroupBox("Blink Detection (diagnostic)")
+        blink_layout = QHBoxLayout()
+        self.blink_start_button = QPushButton("Start Blink Monitor")
+        self.blink_stop_button = QPushButton("Stop Blink Monitor")
+        self.blink_stop_button.setEnabled(False)
+        self.blink_status = QLabel("Idle")
+        self.blink_status.setStyleSheet("color: #ffffff;")
+        self.blink_start_button.clicked.connect(self.start_blink_monitor)
+        self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
+        blink_layout.addWidget(self.blink_start_button)
+        blink_layout.addWidget(self.blink_stop_button)
+        blink_layout.addWidget(self.blink_status)
+        blink_group.setLayout(blink_layout)
+        layout.addWidget(blink_group)
         
         # Log area
         log_group = QGroupBox("System Log")
@@ -1040,6 +1065,111 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.features_timer = QTimer(self)
         self.features_timer.timeout.connect(self.update_features_display)
         self.features_timer.start(1000)  # Update every 1s
+
+        # Blink monitor timer (created but inactive until user starts)
+        self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(200)  # 5 Hz check
+        self._blink_timer.timeout.connect(self._blink_check)
+
+        # Blink runtime state
+        self._blink_active = False
+        self._blink_last_ts = None
+        self._blink_count = 0
+        self._blink_window = deque(maxlen=512)  # 1s of data at 512Hz
+        self._blink_threshold = None
+        self._blink_recent_events = deque(maxlen=20)
+
+    def start_blink_monitor(self):
+        if self._blink_active:
+            return
+        self._blink_active = True
+        self._blink_count = 0
+        self._blink_window.clear()
+        self._blink_threshold = None
+        self._blink_recent_events.clear()
+        self._blink_timer.start()
+        self.blink_start_button.setEnabled(False)
+        self.blink_stop_button.setEnabled(True)
+        self.blink_status.setText("Running…")
+        # Capture original background once for safe restoration
+        try:
+            if not hasattr(self, '_blink_orig_bg'):
+                # backgroundBrush may return QBrush; fall back to string
+                bg = getattr(self.plot_widget, 'backgroundBrush', lambda: None)()
+                if bg and hasattr(bg, 'color'):
+                    self._blink_orig_bg = bg.color().name()
+                else:
+                    self._blink_orig_bg = '#000000'
+        except Exception:
+            self._blink_orig_bg = '#000000'
+        self.log_message("Blink monitor started")
+
+    def stop_blink_monitor(self):
+        if not self._blink_active:
+            return
+        self._blink_active = False
+        self._blink_timer.stop()
+        rate = 0.0
+        try:
+            # Approximate per-minute rate over monitoring session using event timestamps
+            if self._blink_recent_events:
+                duration = (self._blink_recent_events[-1] - self._blink_recent_events[0])
+                if duration > 0:
+                    rate = (len(self._blink_recent_events) - 1) / duration * 60.0
+        except Exception:
+            pass
+        self.blink_status.setText(f"Stopped | Blinks: {self._blink_count} (~{rate:.1f}/min)")
+        self.blink_start_button.setEnabled(True)
+        self.blink_stop_button.setEnabled(False)
+        # Restore original background color
+        try:
+            if hasattr(self, '_blink_orig_bg'):
+                self.plot_widget.setBackground(self._blink_orig_bg)
+        except Exception:
+            pass
+        self.log_message(f"Blink monitor stopped. Total blinks: {self._blink_count}")
+
+    def _blink_check(self):
+        # Lightweight blink detection: large transient absolute deviations
+        if not self._blink_active:
+            return
+        global live_data_buffer
+        if len(live_data_buffer) == 0:
+            return
+        # Update rolling window
+        try:
+            new_samples = live_data_buffer[-128:]  # recent ~250ms
+            self._blink_window.extend(new_samples)
+            if len(self._blink_window) < 64:
+                return
+            arr = np.array(self._blink_window, dtype=float)
+            # High-pass like detrend (remove mean)
+            arr = arr - np.mean(arr)
+            mad = np.median(np.abs(arr - np.median(arr))) + 1e-9
+            # Adaptive threshold initialization
+            if self._blink_threshold is None:
+                self._blink_threshold = 6.0 * mad
+            # Gradually adapt threshold to signal scale
+            self._blink_threshold = 0.98 * self._blink_threshold + 0.02 * (6.0 * mad)
+            # Detect peaks beyond threshold (positive or negative)
+            over = np.where(np.abs(arr[-64:]) > self._blink_threshold)[0]
+            now = time.time()
+            if over.size > 0:
+                # Debounce: require 200ms since last blink
+                if self._blink_last_ts is None or (now - self._blink_last_ts) > 0.2:
+                    self._blink_last_ts = now
+                    self._blink_count += 1
+                    self._blink_recent_events.append(now)
+                    self.blink_status.setText(f"Blink #{self._blink_count}")
+                    # Briefly flash plot background for confirmation (non-invasive)
+                    try:
+                        orig = getattr(self, '_blink_orig_bg', '#000000')
+                        self.plot_widget.setBackground('#202020')
+                        QTimer.singleShot(120, lambda o=orig: self.plot_widget.setBackground(o))
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.blink_status.setText(f"Blink err: {e}")
     
     def log_message(self, message):
         """Add timestamped message to log"""
@@ -1070,9 +1200,15 @@ class BrainLinkAnalyzerWindow(QMainWindow):
                     y_range = y_max - y_min
                     padding = y_range * 0.1 if y_range > 0 else 50
                     
-                    # Manually set ranges without using autoRange
-                    self.plot_widget.setYRange(y_min - padding, y_max + padding, padding=0)
-                    self.plot_widget.setXRange(0, len(data), padding=0)
+                    # Use plot item directly to avoid Qt6 compatibility issues
+                    try:
+                        plot_item = self.plot_widget.getPlotItem()
+                        plot_item.setYRange(y_min - padding, y_max + padding, padding=0)
+                        plot_item.setXRange(0, len(data), padding=0)
+                    except Exception:
+                        # Fallback to widget level if plot item access fails
+                        self.plot_widget.setYRange(y_min - padding, y_max + padding, padding=0)
+                        self.plot_widget.setXRange(0, len(data), padding=0)
                 
                 # Update status label
                 if hasattr(self, 'status_label'):

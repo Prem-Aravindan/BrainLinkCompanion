@@ -1,87 +1,113 @@
-#!/usr/bin/env python3
-# pip install PyQt6
-import sys, math
-import numpy as np
-from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtGui import QPainter, QPen, QBrush, QFont
-from PyQt6.QtCore import Qt, QRectF, QPointF
+# # pip install PyQt6
+# import sys, numpy as np
+# from PyQt6.QtCore import Qt, QTimer, QPointF
+# from PyQt6.QtGui import QPen, QPainter
+# from PyQt6.QtWidgets import QApplication
+# from PyQt6.QtCharts import QChart, QChartView, QLineSeries
 
-x = np.array([0, 1, 2, 3, 4, 5], dtype=float)
-y = np.array([0, 100, -50, 75, -25, 50], dtype=float)
+# class ChartDemo(QChartView):
+#     def __init__(self):
+#         super().__init__()
+#         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-class Plot(QWidget):
+#         self.chart = QChart()
+#         self.chart.setTitle("QtCharts visible line (PyQt6)")
+#         self.chart.legend().hide()
+#         self.setChart(self.chart)
+
+#         # KEEP A REFERENCE TO THE SERIES!
+#         self.series = QLineSeries()
+#         pen = QPen(Qt.GlobalColor.red)
+#         pen.setWidth(4)
+#         pen.setCosmetic(True)  # visibility regardless of transforms/HiDPI
+#         self.series.setPen(pen)
+#         self.chart.addSeries(self.series)
+
+#         self.chart.createDefaultAxes()
+#         # Get axes using the correct PyQt6 method
+#         axes = self.chart.axes()
+#         if len(axes) >= 2:
+#             x_axis = axes[0]  # First axis is typically X
+#             y_axis = axes[1]  # Second axis is typically Y
+#             x_axis.setRange(-1, 6)
+#             y_axis.setRange(-100, 150)
+
+#         # Seed data
+#         x = np.array([0, 1, 2, 3, 4, 5], float)
+#         y = np.array([0, 100, -50, 75, -25, 50], float)
+#         self.series.replace([QPointF(float(a), float(b)) for a, b in zip(x, y)])
+
+#         # Live update to prove visibility
+#         self.t = 0
+#         self.timer = QTimer(self)
+#         self.timer.timeout.connect(self.tick)
+#         self.timer.start(60)
+
+#     def tick(self):
+#         self.t += 1
+#         # simple animation: shift Y by a tiny sine
+#         pts = [p for p in self.series.pointsVector()]
+#         if not pts: 
+#             return
+#         amp = 10.0
+#         s = np.sin(self.t / 10.0)
+#         new_pts = [QPointF(p.x(), p.y() + amp*s) for p in pts]
+#         self.series.replace(new_pts)
+
+# if __name__ == "__main__":
+#     app = QApplication(sys.argv)
+#     w = ChartDemo()
+#     w.resize(900, 600)
+#     w.show()
+#     sys.exit(app.exec())
+
+
+# pip install PyQt6 pyqtgraph
+import sys, numpy as np, pyqtgraph as pg
+from PyQt6 import QtWidgets, QtCore
+from PyQt6.QtCore import Qt
+
+pg.setConfigOption('background', 'w')
+pg.setConfigOption('foreground', 'k')
+pg.setConfigOption('antialias', True)
+
+class PGDemo(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Pure PyQt plot")
-        self.resize(900, 600)
-        self.margin_left, self.margin_right = 80, 30
-        self.margin_top, self.margin_bottom = 50, 70
-        self.xmin, self.xmax = -1.0, 6.0
-        self.ymin, self.ymax = -100.0, 150.0
+        self.setWindowTitle("pyqtgraph visible line (PyQt6)")
+        self.plot = pg.PlotWidget()
+        self.setCentralWidget(self.plot)
 
-    def plotRect(self):
-        w, h = self.width(), self.height()
-        return QRectF(self.margin_left, self.margin_top,
-                      w - self.margin_left - self.margin_right,
-                      h - self.margin_top - self.margin_bottom)
+        pi = self.plot.getPlotItem()
+        pi.showGrid(x=True, y=True)
+        pi.setLabel('bottom', 'X Value')
+        pi.setLabel('left', 'Y Value')
+        pi.setXRange(-1, 6)
+        pi.setYRange(-100, 150)
 
-    def map(self, xv, yv):
-        r = self.plotRect()
-        sx = (xv - self.xmin) / (self.xmax - self.xmin)
-        sy = (yv - self.ymin) / (self.ymax - self.ymin)
-        px = r.left() + sx * r.width()
-        py = r.bottom() - sy * r.height()
-        return QPointF(px, py)
+        x = np.array([0, 1, 2, 3, 4, 5], float)
+        y = np.array([0, 100, -50, 75, -25, 50], float)
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.fillRect(self.rect(), Qt.GlobalColor.white)
-        r = self.plotRect()
+        # Qt6-safe pen; COSMETIC ensures a visible width on HiDPI/transforms
+        pen = pg.mkPen(width=4, style=Qt.PenStyle.SolidLine, cosmetic=True)
+        self.curve = pi.plot(x, y, pen=pen, symbol='o', symbolBrush='b', symbolSize=12)
 
-        # Grid
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setPen(QPen(Qt.GlobalColor.lightGray, 1))
-        for xi in range(int(self.xmin)+1, int(self.xmax)):
-            p.drawLine(self.map(xi, self.ymin), self.map(xi, self.ymax))
-        for yi in range(int(self.ymin), int(self.ymax)+1, 25):
-            p.drawLine(self.map(self.xmin, yi), self.map(self.xmax, yi))
+        # simple live update so you see movement
+        self.t = 0
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self.timer.start(60)
 
-        # Axes
-        p.setPen(QPen(Qt.GlobalColor.black, 2))
-        p.drawLine(self.map(self.xmin, 0), self.map(self.xmax, 0))
-        p.drawLine(self.map(0, self.ymin), self.map(0, self.ymax))
-
-        # Ticks/labels (use QPointF endpoints!)
-        p.setFont(QFont("Sans Serif", 10))
-        for xi in range(0, 6):
-            pt = self.map(xi, 0)
-            p.drawLine(QPointF(pt.x(), pt.y()-5), QPointF(pt.x(), pt.y()+5))
-            p.drawText(int(pt.x()-10), int(r.bottom()+25), f"{xi}")
-
-        for yi in range(int(self.ymin), int(self.ymax)+1, 25):
-            pt = self.map(0, yi)
-            p.drawLine(QPointF(pt.x()-5, pt.y()), QPointF(pt.x()+5, pt.y()))
-            p.drawText(int(r.left()-55), int(pt.y()+5), f"{yi:>4}")
-
-        # Labels
-        f = QFont("Sans Serif", 12); f.setBold(True); p.setFont(f)
-        p.drawText(int(r.center().x()-30), int(self.height()-25), "X Value")
-        p.save(); p.translate(25, r.center().y()+40); p.rotate(-90)
-        p.drawText(0, 0, "Y Value"); p.restore()
-        p.drawText(int(r.left()), int(self.margin_top-15), "Debug Plot (Pure PyQt6)")
-
-        # Data line + markers
-        p.setPen(QPen(Qt.GlobalColor.red, 4))
-        for i in range(len(x)-1):
-            p.drawLine(self.map(x[i], y[i]), self.map(x[i+1], y[i+1]))
-        p.setPen(QPen(Qt.GlobalColor.blue, 2))
-        p.setBrush(QBrush(Qt.GlobalColor.blue))
-        for xi, yi in zip(x, y):
-            pt = self.map(xi, yi); r0 = 6
-            p.drawEllipse(pt, r0, r0)
+    def tick(self):
+        self.t += 1
+        x = np.array([0, 1, 2, 3, 4, 5], float)
+        base = np.array([0, 100, -50, 75, -25, 50], float)
+        y = base + 10.0*np.sin(self.t/10.0)
+        self.curve.setData(x, y)
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    w = Plot()
+    app = QtWidgets.QApplication(sys.argv)
+    w = PGDemo()
+    w.resize(900, 600)
     w.show()
     sys.exit(app.exec())

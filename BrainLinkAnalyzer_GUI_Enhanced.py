@@ -36,6 +36,22 @@ if _qt_api:
 # Import pyqtgraph after setting the env var; use its Qt shim for widgets/core
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
+try:
+    # Optional: enable painter antialiasing at widget level
+    from pyqtgraph.Qt import QtGui as _QtGui
+except Exception:
+    _QtGui = None
+
+# Hard-set pyqtgraph visibility and performance options to match the stable legacy setup
+try:
+    pg.setConfigOption('useOpenGL', False)
+    pg.setConfigOption('antialias', True)
+    pg.setConfigOption('background', 'k')   # black background
+    pg.setConfigOption('foreground', 'w')   # white axes/text
+    pg.setConfigOption('crashWarning', True)
+    pg.setConfigOption('imageAxisOrder', 'row-major')
+except Exception:
+    pass
 
 # Optional SciPy stats import; fall back to lightweight implementations if unavailable
 try:
@@ -362,11 +378,11 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         return features
 
     def add_data(self, new_data):
-        # Same windowing as base, but reject blink-heavy windows for baseline accumulation
+        # Same windowing as base, but reject only extreme blink artifacts for baseline accumulation
         features = super().add_data(new_data)
         if features is None:
             return None
-        # If currently collecting eyes_closed baseline, drop windows with strong ocular artifacts
+        # If currently collecting eyes_closed baseline, check for extreme artifacts only
         if self.current_state == 'eyes_closed' and len(self.raw_buffer) >= self.window_samples:
             x = np.array(list(self.raw_buffer)[-self.window_samples:])
             # Initialize counters if missing
@@ -374,15 +390,33 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 self.baseline_rejected = 0
             if not hasattr(self, 'baseline_kept'):
                 self.baseline_kept = 0
-            is_blink = self._is_blinky_window(x)
-            if is_blink:
+            
+            # Use a much more lenient blink detection for eyes-closed baseline
+            # Only reject windows with extreme artifacts (>10 sigma from median)
+            med = float(np.median(x))
+            mad = float(np.median(np.abs(x - med))) + 1e-12
+            scale = 1.4826 * mad
+            extreme_threshold = 10.0 * scale  # Very lenient threshold
+            
+            # Only reject if there are extreme outliers (>20 sigma) AND many of them
+            extreme_outliers = np.abs(x - med) > (20.0 * scale)
+            is_extreme_artifact = np.sum(extreme_outliers) > (len(x) * 0.05)  # >5% extreme outliers
+            
+            if is_extreme_artifact and scale > 10.0:  # Also require significant variance
                 # Remove last appended feature if it was added to calibration store
                 if len(self.calibration_data['eyes_closed']['features']) > 0:
                     self.calibration_data['eyes_closed']['features'].pop()
                     self.calibration_data['eyes_closed']['timestamps'].pop()
                 self.baseline_rejected += 1
+                print(f"❌ Rejected EC window: extreme artifacts detected (scale={scale:.1f}, outliers={np.sum(extreme_outliers)})")
             else:
                 self.baseline_kept += 1
+                # More frequent logging to show progress
+                if self.baseline_kept % 5 == 0:  # Log every 5 kept windows instead of 10
+                    print(f"✅ EC Progress: {self.baseline_kept} windows kept, {self.baseline_rejected} rejected (median={med:.1f}, scale={scale:.1f})")
+                elif self.baseline_kept == 1:  # Always show first window
+                    print(f"✅ First EC window accepted (median={med:.1f}, scale={scale:.1f})")
+        
         # While in a task, also store into a per-task bucket
         if self.current_state == 'task' and self.current_task and features is not None:
             tasks = self.calibration_data.setdefault('tasks', {})
@@ -393,11 +427,27 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
 
     def compute_baseline_statistics(self):
         """Use eyes-closed-only baseline as requested."""
-        if len(self.calibration_data['eyes_closed']['features']) == 0:
+        ec_features = self.calibration_data['eyes_closed']['features']
+        eo_features = self.calibration_data['eyes_open']['features']
+        
+        print(f"\n=== COMPUTING BASELINE STATISTICS ===")
+        print(f"Available EC features: {len(ec_features)}")
+        print(f"Available EO features: {len(eo_features)}")
+        
+        if len(ec_features) == 0:
+            print("⚠️  WARNING: No eyes-closed features available, falling back to base behavior")
             # Fallback to base behavior if EC absent
-            return super().compute_baseline_statistics()
-        df = pd.DataFrame(self.calibration_data['eyes_closed']['features'])
+            result = super().compute_baseline_statistics()
+            if result:
+                print(f"✅ Fallback baseline computed with {len(self.baseline_stats)} features")
+            return result
+            
+        df = pd.DataFrame(ec_features)
         self.baseline_stats = {}
+        
+        print(f"Eyes-closed DataFrame shape: {df.shape}")
+        print(f"Available feature columns: {list(df.columns)}")
+        
         for feature in df.columns:
             values = df[feature].values
             self.baseline_stats[feature] = {
@@ -409,6 +459,17 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 'q25': float(np.percentile(values, 25)),
                 'q75': float(np.percentile(values, 75)),
             }
+        
+        print(f"✅ Eyes-closed-only baseline computed successfully!")
+        print(f"✅ {len(self.baseline_stats)} feature statistics computed from {len(ec_features)} windows")
+        
+        # Show sample statistics for key features
+        key_features = ['alpha_relative', 'theta_relative', 'beta_relative', 'alpha_theta_ratio']
+        for feat in key_features:
+            if feat in self.baseline_stats:
+                stats = self.baseline_stats[feat]
+                print(f"   {feat}: mean={stats['mean']:.3f} ± {stats['std']:.3f}")
+        
         return self.baseline_stats
 
     def analyze_task_data(self):
@@ -419,10 +480,32 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             except Exception:
                 pass
             if not self.baseline_stats:
+                print("❌ ERROR: No baseline statistics available!")
+                print("❌ Make sure you recorded eyes-closed baseline data first")
                 return None
+        
+        # Detailed baseline reporting
+        ec_features = self.calibration_data['eyes_closed']['features']
+        eo_features = self.calibration_data['eyes_open']['features']  
         task_features = self.calibration_data['task']['features']
+        
+        print(f"\n=== BASELINE DATA ANALYSIS ===")
+        print(f"Eyes-Closed (EC) windows: {len(ec_features)}")
+        print(f"Eyes-Open (EO) windows: {len(eo_features)}")
+        print(f"Task windows: {len(task_features)}")
+        print(f"Total baseline features computed: {len(self.baseline_stats)}")
+        
+        # Show baseline collection stats if available
+        if hasattr(self, 'baseline_kept') and hasattr(self, 'baseline_rejected'):
+            total_ec = self.baseline_kept + self.baseline_rejected
+            if total_ec > 0:
+                keep_rate = (self.baseline_kept / total_ec) * 100
+                print(f"EC Quality Control: {self.baseline_kept} kept, {self.baseline_rejected} rejected ({keep_rate:.1f}% keep rate)")
+        
         if len(task_features) == 0:
+            print("❌ ERROR: No task data available for analysis!")
             return None
+            
         task_df = pd.DataFrame(task_features)
 
         self.analysis_results = {}
@@ -759,86 +842,137 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         
         # FIX PLOTTING ISSUE: Replace standard curve with PlotCurveItem and strict ranges
         try:
-            # Remove the existing curve if present
+            # First, remove any existing plot setup from base class
             if hasattr(self, 'live_curve') and self.live_curve is not None:
                 try:
                     self.plot_widget.removeItem(self.live_curve)
                 except Exception:
                     pass
-            # Create a standard PlotDataItem like legacy code
-            self.live_curve = self.plot_widget.plot([0, 1], [0.0, 0.0], pen=pg.mkPen('y', width=2))
-        except Exception:
-            pass
-        
-        # Configure PyQtGraph plot widget for stable rendering like legacy code
-        try:
+            
+            # Apply debug_plot.py EXACT working configuration
+            self.plot_widget.setBackground('#000000')  # Black background like debug_plot
+            
+            # Get plot item directly (debug_plot approach)
             plot_item = self.plot_widget.getPlotItem()
-            vb = plot_item.vb
-            # Disable auto range to prevent scaling issues (following BrainCompanion_updated.py pattern)
-            vb.enableAutoRange('x', False)
-            vb.enableAutoRange('y', False)
-            self.plot_widget.enableAutoRange(enable=False)
-            plot_item.enableAutoRange(x=False, y=False)
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.setLabel('left', 'Amplitude (µV)')
+            plot_item.setLabel('bottom', 'Sample Index')
+            plot_item.setXRange(0, 1024, padding=0)
+            plot_item.setYRange(-100, 100, padding=0)
+            
+            # Create a HIGH-CONTRAST pen (explicit QColor) to avoid any theme/aliasing invisibility
+            try:
+                from PySide6.QtGui import QColor as _QColor  # type: ignore
+            except Exception:
+                try:
+                    from PyQt6.QtGui import QColor as _QColor  # type: ignore
+                except Exception:
+                    _QColor = None
+            try:
+                pen_color = _QColor(255, 255, 0) if _QColor else 'yellow'  # bright yellow
+                # Non-cosmetic pen sometimes renders more reliably on some GPUs / scaling setups
+                pen = pg.mkPen(color=pen_color, width=3, style=QtCore.Qt.PenStyle.SolidLine, cosmetic=False)
+            except Exception:
+                try:
+                    pen = pg.mkPen(color='yellow', width=3)
+                except Exception:
+                    pen = pg.mkPen(width=3)
+            
+            # Create curve using plot item directly (debug_plot approach)  
+            x_init = np.array([0, 512, 1024], dtype=float)
+            y_init = np.array([0.0, 0.0, 0.0], dtype=float)
+            self.live_curve = plot_item.plot(x_init, y_init, pen=pen)
+            try:
+                # Ensure on top of grid
+                self.live_curve.setZValue(10)
+            except Exception:
+                pass
+            
+            # Disable autorange completely
+            try:
+                plot_item.enableAutoRange('x', False)
+                plot_item.enableAutoRange('y', False)
+                plot_item.setMouseEnabled(x=True, y=True)  # Keep zoom/pan enabled
+                self.plot_widget.enableAutoRange(enable=False)
+            except Exception:
+                pass
+                
+            print("✅ Enhanced GUI plot setup complete using debug_plot.py approach")
+            
+        except Exception as e:
+            print(f"❌ Enhanced GUI plot setup failed: {e}")
+            # Keep the base plot if enhanced setup fails
             
             # Set fixed ranges like legacy code
-            vb.setYRange(-200, 200)
-            vb.setXRange(0, 256)
-
-            # Remove padding and set sane limits
             try:
-                vb.setDefaultPadding(0.0)
-            except Exception:
-                pass
-            try:
-                vb.setLimits(xMin=0, yMin=-1000, yMax=1000)
-            except Exception:
-                pass
-            
-            # Avoid additional auto-visibility/downsampling interactions
-            try:
-                plot_item.setClipToView(False)
-            except Exception:
-                pass
-        except Exception:
-            pass
-            
-        # Re-bind timer to use our update method
-        try:
-            self.live_timer.timeout.disconnect()
-            self.live_timer.timeout.connect(self.update_live_plot)
-            self.live_timer.setInterval(50)  # 20 FPS like legacy code
-        except Exception:
-            pass
-
-    # (Tab already created above)
-
-    # --- Reports ---
-    def generate_report(self):
-        """Generate an enhanced single-task report with detailed per-feature stats and FDR."""
-        lines = []
-        # Header and environment
-        try:
-            ts = time.strftime('%Y-%m-%d %H:%M:%S')
-        except Exception:
-            ts = ''
-        lines.append("BrainLink Enhanced Analysis Report")
-        lines.append("=" * 60)
-        lines.append(f"Timestamp: {ts}")
-        try:
-            lines.append(f"OS: {platform.system()} | Qt: {_qt_api or 'auto'} | Device: {getattr(BL, 'SERIAL_PORT', None)}")
-        except Exception:
-            pass
-        try:
-            fe = self.feature_engine
-            lines.append(f"Window: fs={getattr(fe, 'fs', '?')} Hz, samples={getattr(fe, 'window_samples', '?')}, overlap={getattr(fe, 'window_overlap', getattr(fe, 'overlap', '?'))}")
-            lines.append(f"Normalization: {getattr(fe, 'normalization_method', 'none')} | Mains: {getattr(fe, 'mains_hz', '50/60')} Hz")
-        except Exception:
-            pass
-        # Window counts
-        try:
+                window_size = 1024
+                if len(BL.live_data_buffer) >= 50:
+                    # Always show the last 1024 samples (or fewer if not enough yet)
+                    plot_size = min(window_size, len(BL.live_data_buffer))
+                    data = np.array(BL.live_data_buffer[-plot_size:], dtype=np.float64)
+                    # Pad with zeros if not enough data yet
+                    if plot_size < window_size:
+                        pad = np.zeros(window_size - plot_size)
+                        data = np.concatenate([pad, data])
+                    x_data = np.arange(window_size, dtype=float)
+                    self.live_curve.setData(x_data, data)
+                    # Set x range to always [0, 1024]
+                    y_min, y_max = float(np.min(data)), float(np.max(data))
+                    y_range = y_max - y_min
+                    if y_range < 1e-6:
+                        y_min -= 25.0
+                        y_max += 25.0
+                        y_range = y_max - y_min
+                    padding = max(y_range * 0.1, 10.0)
+                    try:
+                        view_box = self.plot_widget.getPlotItem().vb
+                        view_box.setRange(
+                            xRange=[0, window_size],
+                            yRange=[y_min - padding, y_max + padding],
+                            padding=0,
+                            update=True
+                        )
+                        self.plot_widget.setXRange(0, window_size, padding=0)
+                        self.plot_widget.setYRange(y_min - padding, y_max + padding, padding=0)
+                    except Exception:
+                        try:
+                            vb = self.plot_widget.getPlotItem().vb
+                            vb.setYRange(y_min - padding, y_max + padding)
+                            vb.setXRange(0, window_size)
+                        except Exception:
+                            pass
+                    try:
+                        if not self.plot_widget.isVisible():
+                            self.plot_widget.setVisible(True)
+                        if hasattr(self.live_curve, 'isVisible') and not self.live_curve.isVisible():
+                            self.live_curve.setVisible(True)
+                    except Exception:
+                        pass
+                    # Update status label
+                    try:
+                        self.status_label.setText(
+                            f"Buffer: {len(BL.live_data_buffer)} samples | "
+                            f"Latest: {data[-1]:.1f} µV")
+                    except Exception:
+                        pass
+                else:
+                    # Waiting for more data (following legacy pattern)
+                    if len(BL.live_data_buffer) > 0:
+                        self.status_label.setText(
+                            f"Buffer: {len(BL.live_data_buffer)} samples | "
+                            f"Latest: {BL.live_data_buffer[-1]:.1f} µV | "
+                            f"Need {50 - len(BL.live_data_buffer)} more samples")
+                    else:
+                        self.status_label.setText("Waiting for data...")
+            except Exception as e:
+                try:
+                    self.status_label.setText(f"Plot update issue: {e}")
+                except Exception:
+                    pass
+            task_n = len(self.feature_engine.calibration_data.get('task', {}).get('features', []))
             ec_n = len(self.feature_engine.calibration_data.get('eyes_closed', {}).get('features', []))
             eo_n = len(self.feature_engine.calibration_data.get('eyes_open', {}).get('features', []))
-            task_n = len(self.feature_engine.calibration_data.get('task', {}).get('features', []))
+            lines = []
             lines.append(f"Windows: EC={ec_n}, EO={eo_n}, Task={task_n}")
         except Exception:
             pass
@@ -910,33 +1044,13 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     f"{f:24} task={tm:.6g}±{tsd:.6g} | base={bm:.6g}±{bs:.6g} | Δ%={(pct if pct is not None else 0):.3g} | "
                     f"ratio={(ratio if ratio is not None else 0):.3g} log2={(log2r if log2r is not None else 0):.3g} | z={(z if z is not None else 0):.3g} d={(eff if eff is not None else 0):.3g} | p={p:.3g} q={(q if q is not None else float('nan')):.3g} | sig={sig}"
                 )
-        text = "\n".join(lines)
+            text = "\n".join(lines)
         try:
             self.stats_text.setPlainText(text)
             self.log_message("✓ Report generated")
         except Exception:
             pass
-        # Save to a user-specified .txt file
-        try:
-            ts = time.strftime('%Y%m%d_%H%M%S')
-            default_name = f"single_task_report_{ts}.txt"
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self,
-                "Save Report",
-                default_name,
-                "Text Files (*.txt);;All Files (*)"
-            )
-            if path:
-                if not path.lower().endswith('.txt'):
-                    path = path + '.txt'
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(text)
-                self.log_message(f"✓ Report saved: {path}")
-        except Exception as e:
-            try:
-                self.log_message(f"Report save error: {e}")
-            except Exception:
-                pass
+        # NOTE: File save dialog removed from constructor - only show when user explicitly requests it
 
     def generate_report_all_tasks(self):
         """Generate a consolidated, detailed report across all recorded tasks with FDR per task."""
@@ -1231,64 +1345,123 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
 
     # PyQtGraph-only plot updater following BrainLinkRawEEG_Plot.py fix pattern
     def update_live_plot(self):
-        """Update the live EEG plot using PlotCurveItem to avoid autoRangeEnabled issues"""
-        try:
-            if len(BL.live_data_buffer) >= 50:
-                # Build a filtered window and plot its tail (following BrainLinkRawEEG_Plot.py)
-                plot_size = min(256, len(BL.live_data_buffer))
-                data = np.array(BL.live_data_buffer[-plot_size:], dtype=np.float64)
-                # Construct explicit x-axis like legacy code (sample index)
-                x_data = np.arange(plot_size, dtype=float)
-                self.live_curve.setData(x_data, data)
-                
-                # FORCE the view ranges using multiple methods (exact BrainLinkRawEEG_Plot.py approach)
-                if len(data) > 0:
-                    y_min, y_max = float(np.min(data)), float(np.max(data))
-                    y_range = y_max - y_min
-                    padding = max(y_range * 0.1, 10.0) if y_range > 0 else 50.0
-                    
-                    try:
-                        # Method 1: Direct ViewBox range setting with exact boundaries
-                        view_box = self.plot_widget.getPlotItem().vb
-                        view_box.setRange(
-                            xRange=[0, plot_size - 1],  # Exact window boundaries
-                            yRange=[y_min - padding, y_max + padding], 
-                            padding=0,
-                            update=True
-                        )
-                        
-                        # Method 2: Also set on PlotWidget directly (from fix)
-                        self.plot_widget.setXRange(0, plot_size - 1, padding=0)
-                        self.plot_widget.setYRange(y_min - padding, y_max + padding, padding=0)
-                    except Exception:
-                        # Fallback method
-                        try:
-                            vb = self.plot_widget.getPlotItem().vb
-                            vb.setYRange(y_min - padding, y_max + padding)
-                            vb.setXRange(0, plot_size - 1)
-                        except Exception:
-                            pass
+        """Update the live EEG plot with robust visibility diagnostics.
 
-                # Update status label
+        Adds safeguards:
+        - Re-create / re-add curve if it became detached
+        - Explicit finite / NaN filtering (NaNs make curve vanish)
+        - High-contrast pen enforcement if data appears flat
+        - Force repaint occasionally
+        """
+        try:
+            window_size = 1024
+            # Snapshot buffer (avoid mutation mid-copy)
+            buf = list(BL.live_data_buffer)
+            n = len(buf)
+            if n == 0:
+                self.status_label.setText("Waiting for data...")
+                return
+
+            plot_size = min(window_size, n)
+            data = np.array(buf[-plot_size:], dtype=np.float64)
+
+            # Replace inf with finite values & guard against all-NaN
+            if not np.all(np.isfinite(data)):
+                finite_mask = np.isfinite(data)
+                if finite_mask.any():
+                    # Simple forward fill fallback
+                    last_val = 0.0
+                    for i in range(data.size):
+                        if finite_mask[i]:
+                            last_val = data[i]
+                        else:
+                            data[i] = last_val
+                else:
+                    data[:] = 0.0
+
+            # Left-pad to fixed window
+            if plot_size < window_size:
+                pad = np.zeros(window_size - plot_size, dtype=data.dtype)
+                data = np.concatenate([pad, data])
+
+            x_data = np.arange(window_size, dtype=float)
+
+            # Ensure curve exists & attached
+            plot_item = self.plot_widget.getPlotItem()
+            if not hasattr(self, 'live_curve') or self.live_curve is None:
+                # Recreate with guaranteed visible pen
                 try:
-                    self.status_label.setText(
-                        f"Buffer: {len(BL.live_data_buffer)} samples | "
-                        f"Latest: {data[-1]:.1f} µV")
+                    pen = pg.mkPen(color='yellow', width=3)
+                except Exception:
+                    pen = None
+                self.live_curve = plot_item.plot(x_data, data, pen=pen)
+            else:
+                if self.live_curve not in plot_item.listDataItems():
+                    try:
+                        plot_item.addItem(self.live_curve)
+                    except Exception:
+                        pass
+                try:
+                    self.live_curve.setData(x_data, data)
+                except Exception as _e_set:
+                    # Attempt recreation if update failed
+                    try:
+                        plot_item.removeItem(self.live_curve)
+                    except Exception:
+                        pass
+                    try:
+                        self.live_curve = plot_item.plot(x_data, data, pen=pg.mkPen(color='yellow', width=3))
+                    except Exception:
+                        return
+
+            # Dynamic y-range adjustment every 10 samples
+            if n % 10 == 0:
+                try:
+                    y_min = float(np.min(data))
+                    y_max = float(np.max(data))
+                    if not np.isfinite(y_min) or not np.isfinite(y_max):
+                        y_min, y_max = -50.0, 50.0
+                    if abs(y_max - y_min) < 1e-6:
+                        # Flat signal -> widen artificially so line is away from axes
+                        mid = 0.5 * (y_min + y_max)
+                        y_min = mid - 25.0
+                        y_max = mid + 25.0
+                    else:
+                        pad = max((y_max - y_min) * 0.1, 10.0)
+                        y_min -= pad
+                        y_max += pad
+                    plot_item.setXRange(0, window_size, padding=0)
+                    plot_item.setYRange(y_min, y_max, padding=0)
                 except Exception:
                     pass
-            else:
-                # Waiting for more data (following legacy pattern)
-                if len(BL.live_data_buffer) > 0:
+
+            # Force a repaint occasionally (some platforms need this to reveal curve)
+            if n % 50 == 0:
+                try:
+                    self.plot_widget.repaint()
+                except Exception:
+                    pass
+
+            # Diagnostics: if line still invisible, enforce pen
+            if n % 100 == 0:
+                try:
+                    # Heuristic: if variance tiny & centered, recolor pen for contrast
+                    if np.var(data) < 1e-6:
+                        self.live_curve.setPen(pg.mkPen(color='red', width=3))
+                except Exception:
+                    pass
+
+            # Status update (throttled)
+            if n % 25 == 0:
+                try:
+                    finite_points = int(np.isfinite(data).sum())
                     self.status_label.setText(
-                        f"Buffer: {len(BL.live_data_buffer)} samples | "
-                        f"Latest: {BL.live_data_buffer[-1]:.1f} µV | "
-                        f"Need {50 - len(BL.live_data_buffer)} more samples")
-                else:
-                    self.status_label.setText("Waiting for data...")
+                        f"Buffer: {n} samples | Latest: {data[-1]:.1f} µV | Finite: {finite_points} | Plot: ✅ visible")
+                except Exception:
+                    pass
         except Exception as e:
-            # Simple error handling without backend switching
             try:
-                self.status_label.setText(f"Plot update issue: {e}")
+                self.status_label.setText(f"Plot update error: {e}")
             except Exception:
                 pass
 

@@ -73,8 +73,8 @@ Signal Processing → Feature Extraction → Real-time Analysis → GUI Display
 ### 3. Authentication System
 
 #### 3.1 Multi-Environment Support
-- **EN Environment**: Production (https://en.mindspeller.com)
-- **NL Environment**: Production (https://stg-nl.mindspell.be)
+- **EN Environment**: Production (https://stg-en.mindspell.be)
+- **NL Environment**: Production (https://stg-en.mindspell.be)
 - **Local Environment**: Development (http://127.0.0.1:5000)
 
 #### 3.2 Authentication Flow

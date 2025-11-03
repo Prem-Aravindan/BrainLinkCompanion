@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced BrainLink Feature Analysis GUI
+Enhanced MindLink Feature Analysis GUI
 Implements targeted recommendations with the following changes:
 - Eyes-closed-only baseline protocol for calibration
 - Blink/ocular artifact-aware baseline window rejection
@@ -24,6 +24,24 @@ import platform
 import sys  # Needed for QApplication argv usage and reliability
 import threading
 import time
+import weakref
+
+_QT_PLATFORM_ALIASES = {
+    "windows": "windows",
+    "win32": "windows",
+    "win": "windows",
+    "darwin": "cocoa",
+    "macos": "cocoa",
+    "mac": "cocoa",
+    "linux": "xcb",
+    "linux2": "xcb",
+}
+
+
+def _qt_platform_key(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    return _QT_PLATFORM_ALIASES.get(name.strip().lower())
 
 import numpy as np
 import pandas as pd
@@ -32,6 +50,14 @@ def _set_qt_plugin_path(path: str) -> None:
         return
     os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = path
 
+
+# When running from a PyInstaller bundle, prefer the bundled plugin path first
+_frozen_root = getattr(sys, '_MEIPASS', None)
+if _frozen_root:
+    _plugins_dir = os.path.join(_frozen_root, 'PySide6', 'plugins')
+    if os.path.isdir(_plugins_dir):
+        _set_qt_plugin_path(os.path.join(_plugins_dir, 'platforms'))
+        os.environ.setdefault('QT_PLUGIN_PATH', _plugins_dir)
 
 # If still not set, fallback to site-packages (development environment)
 if not os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH'):
@@ -46,8 +72,11 @@ if not os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH'):
 _cur = os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH')
 if _cur and not os.path.isdir(_cur):
     os.environ.pop('QT_QPA_PLATFORM_PLUGIN_PATH', None)
-# Force default platform if not specified
-os.environ.setdefault('QT_QPA_PLATFORM', 'windows')
+# Prefer a platform plugin that matches the host OS when none provided
+if not os.environ.get('QT_QPA_PLATFORM'):
+    _host_qt_platform = _qt_platform_key(platform.system())
+    if _host_qt_platform:
+        os.environ['QT_QPA_PLATFORM'] = _host_qt_platform
 # Select a usable Qt binding and configure pyqtgraph accordingly
 
 
@@ -151,6 +180,22 @@ except Exception:
     _scipy_f_oneway = None
     _scipy_wilcoxon = None
 
+try:  # SciPy >= 1.7
+    from scipy.stats import binomtest as _scipy_binomtest  # type: ignore
+except Exception:
+    try:  # Deprecated alias (SciPy < 1.7)
+        from scipy.stats import binom_test as _scipy_binom_test_old  # type: ignore
+
+        class _LegacyBinomTestWrapper:
+            def __init__(self, successes: int, trials: int, prob: float = 0.5):
+                self.pvalue = float(_scipy_binom_test_old(successes, trials, prob))
+
+        def _scipy_binomtest(successes: int, trials: int, prob: float = 0.5):
+            return _LegacyBinomTestWrapper(successes, trials, prob)
+
+    except Exception:
+        _scipy_binomtest = None
+
 # Import original application as a module
 _dbg("import base GUI BL")
 import BrainLinkAnalyzer_GUI as BL
@@ -165,9 +210,9 @@ EFFECT_MEASURE_CHOICES = ("delta", "z")
 OMNIBUS_CHOICES = ("Friedman", "RM-ANOVA")
 POSTHOC_CHOICES = ("Wilcoxon",)
 PERM_PRESETS = {
-    "fast": 200,
+    "fast": 500,
     "default": 1000,
-    "strict": 5000,
+    "strict": 2000,
 }
 
 
@@ -218,7 +263,7 @@ class EnhancedAnalyzerConfig:
     mode: str = "aggregate_only"
     dependence_correction: str = "Kost-McDermott"
     use_permutation_for_sumP: bool = True
-    n_perm: int = 1000
+    n_perm: int = 1000  # Reduced from 5000 for faster analysis
     discretization_bins: int = 5
     export_profile: str = "full"
     effect_measure: str = "delta"
@@ -227,6 +272,13 @@ class EnhancedAnalyzerConfig:
     fdr_alpha: float = 0.05
     seed: Optional[int] = None
     runtime_preset: Optional[str] = None
+    min_effect_size: float = 0.5
+    min_percent_change: float = 10.0
+    correlation_guard: bool = True
+    # Newly configurable analysis parameters
+    block_seconds: float = 8.0
+    mt_tapers: int = 3
+    nmin_sessions: int = 5
     
     # Performance note: Permutation testing is optimized with:
     # 1. Vectorized Welch t-test (5-10x faster than looping)
@@ -254,6 +306,28 @@ class EnhancedAnalyzerConfig:
         self.fdr_alpha = float(self.fdr_alpha)
         self.discretization_bins = max(2, int(self.discretization_bins))
         self.n_perm = max(1, int(self.n_perm))
+        self.min_effect_size = max(0.0, float(self.min_effect_size))
+        self.min_percent_change = max(0.0, float(self.min_percent_change))
+        self.correlation_guard = bool(self.correlation_guard)
+        # Coerce and validate newly added parameters
+        try:
+            self.block_seconds = float(self.block_seconds)
+            if self.block_seconds <= 0:
+                self.block_seconds = 8.0
+        except Exception:
+            self.block_seconds = 8.0
+        try:
+            self.mt_tapers = int(self.mt_tapers)
+            if self.mt_tapers < 1:
+                self.mt_tapers = 1
+        except Exception:
+            self.mt_tapers = 3
+        try:
+            self.nmin_sessions = int(self.nmin_sessions)
+            if self.nmin_sessions < 2:
+                self.nmin_sessions = 2
+        except Exception:
+            self.nmin_sessions = 5
 
     @property
     def is_feature_selection(self) -> bool:
@@ -277,6 +351,15 @@ class EnhancedAnalyzerConfig:
         parser.add_argument("--fdr-alpha", type=float, default=None)
         parser.add_argument("--seed", type=int, default=None)
         parser.add_argument("--perm-preset", choices=tuple(PERM_PRESETS.keys()), default=None)
+        parser.add_argument("--min-effect-size", type=float, default=None)
+        parser.add_argument("--min-percent-change", type=float, default=None)
+        parser.add_argument("--correlation-guard", dest="corr_guard", action="store_true")
+        parser.add_argument("--no-correlation-guard", dest="corr_guard", action="store_false")
+        parser.set_defaults(corr_guard=None)
+        # Newly added CLI options
+        parser.add_argument("--block-seconds", type=float, default=None, help="Seconds per analysis block for block-based stats")
+        parser.add_argument("--mt-tapers", type=int, default=None, help="Number of DPSS tapers for multitaper PSD")
+        parser.add_argument("--nmin-sessions", type=int, default=None, help="Minimum sessions required to enable across-task significance tests")
         parser.add_argument("--config-help", action="help", help="Show configuration options and exit")
 
         parsed, _ = parser.parse_known_args(argv or [])
@@ -299,13 +382,30 @@ class EnhancedAnalyzerConfig:
         env_preset = os.environ.get("BL_PERM_PRESET")
         if env_preset and env_preset not in PERM_PRESETS:
             env_preset = None
+        env_min_effect = _env_float("BL_MIN_EFFECT_SIZE", 0.5)
+        env_min_pct = _env_float("BL_MIN_PERCENT_CHANGE", 10.0)
+        env_corr_guard = _env_bool("BL_CORRELATION_GUARD", True)
+        # Newly added environment overrides
+        env_block_seconds = _env_float("BL_BLOCK_SECONDS", None)
+        env_mt_tapers = _env_int("BL_MT_TAPERS", None)
+        env_nmin_sessions = _env_int("BL_NMIN_SESSIONS", None)
+
+        n_perm_value = None
+        if parsed.n_perm is not None:
+            n_perm_value = parsed.n_perm
+        elif env_n_perm is not None:
+            n_perm_value = env_n_perm
+        else:
+            n_perm_value = PERM_PRESETS.get(parsed.perm_preset or env_preset or "", 1000)
+
+        use_perm_value = parsed.use_perm if parsed.use_perm is not None else (env_perm_flag if env_perm_flag is not None else True)
 
         cfg = cls(
             alpha=parsed.alpha if parsed.alpha is not None else env_alpha,
             mode=parsed.mode or env_mode,
             dependence_correction=parsed.dependence_correction or env_dep,
-            use_permutation_for_sumP=parsed.use_perm if parsed.use_perm is not None else (env_perm_flag if env_perm_flag is not None else True),
-            n_perm=parsed.n_perm or env_n_perm or PERM_PRESETS.get(parsed.perm_preset or env_preset or "", 1000),
+            use_permutation_for_sumP=use_perm_value,
+            n_perm=n_perm_value,
             discretization_bins=parsed.discretization_bins or env_bins or 5,
             export_profile=parsed.export_profile or env_export,
             effect_measure=parsed.effect_measure or env_effect,
@@ -314,6 +414,12 @@ class EnhancedAnalyzerConfig:
             fdr_alpha=parsed.fdr_alpha if parsed.fdr_alpha is not None else env_fdr_alpha,
             seed=parsed.seed if parsed.seed is not None else env_seed,
             runtime_preset=parsed.perm_preset or env_preset,
+            min_effect_size=parsed.min_effect_size if parsed.min_effect_size is not None else env_min_effect,
+            min_percent_change=parsed.min_percent_change if parsed.min_percent_change is not None else env_min_pct,
+            correlation_guard=parsed.corr_guard if parsed.corr_guard is not None else env_corr_guard,
+            block_seconds=(parsed.block_seconds if parsed.block_seconds is not None else (env_block_seconds if env_block_seconds is not None else 8.0)),
+            mt_tapers=(parsed.mt_tapers if parsed.mt_tapers is not None else (env_mt_tapers if env_mt_tapers is not None else 3)),
+            nmin_sessions=(parsed.nmin_sessions if parsed.nmin_sessions is not None else (env_nmin_sessions if env_nmin_sessions is not None else 5)),
         )
         return cfg
 
@@ -322,6 +428,7 @@ class EnhancedAnalyzerConfig:
 QDialog = QtWidgets.QDialog
 QLabel = QtWidgets.QLabel
 QVBoxLayout = QtWidgets.QVBoxLayout
+QHBoxLayout = QtWidgets.QHBoxLayout
 QPushButton = QtWidgets.QPushButton
 QTextEdit = QtWidgets.QTextEdit
 QWidget = QtWidgets.QWidget
@@ -356,6 +463,10 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         # Configuration
         self.normalization_method = normalization_method
         self.blink_sigma = blink_sigma
+        # Block-based analysis defaults
+        self.block_seconds = getattr(self.config, 'block_seconds', 8.0)
+        self.nmin_sessions = getattr(self.config, 'nmin_sessions', 5)
+        self.mt_tapers = getattr(self.config, 'mt_tapers', 3)
         # Mains frequency heuristic (Windows: 60Hz, others default 50Hz)
         try:
             self.mains_hz = 60.0 if platform.system() == 'Windows' else 50.0
@@ -380,9 +491,14 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         # Diagnostics counters for EC windows
         self.baseline_kept = 0
         self.baseline_rejected = 0
+        # Gamma EMG guard statistics
+        self.gamma_windows_total = 0
+        self.gamma_windows_kept = 0
         # Permutation and correlation caches
         self._perm_index_cache: Dict[Tuple[str, int, int, int], np.ndarray] = {}
         self._cached_corr_matrices: Dict[Tuple[Any, ...], np.ndarray] = {}
+        self._cached_block_summaries: Dict[Tuple[str, int, float], Any] = {}
+        self._cached_block_corr: Dict[Tuple[str, Tuple[str, ...], int, float], np.ndarray] = {}
         self.last_export_full: Dict[str, Any] = {}
         self.last_export_integer: Dict[str, Any] = {}
         # Cancellation / progress hooks for long-running permutation tasks
@@ -444,7 +560,10 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
     # --- Minimal statistical helpers (SciPy optional) ---
     @staticmethod
     def _welch_ttest(x: np.ndarray, y: np.ndarray):
-        """Return (t_stat, p_value) for Welch's t-test. Uses SciPy if available; otherwise a normal approximation."""
+        """Return (t_stat, p_value) for Welch's t-test.
+        Uses SciPy if available; otherwise a conservative normal approximation.
+        Guard against zero-variance degenerate cases to avoid spurious tiny p-values.
+        """
         # Prefer SciPy if present
         if _scipy_ttest_ind is not None:
             try:
@@ -462,8 +581,14 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         my = float(np.mean(y))
         vx = float(np.var(x, ddof=1)) if nx > 1 else 0.0
         vy = float(np.var(y, ddof=1)) if ny > 1 else 0.0
-        denom = np.sqrt((vx / max(nx, 1)) + (vy / max(ny, 1)) + 1e-18)
-        t_stat = 0.0 if denom == 0 else (mx - my) / denom
+        # If both groups have (near) zero variance, treat as non-testable (p=1.0)
+        if vx <= 1e-15 and vy <= 1e-15:
+            return 0.0, 1.0
+        denom = float(np.sqrt((vx / max(nx, 1)) + (vy / max(ny, 1))))
+        if denom <= 1e-15:
+            # Degenerate denominator; avoid artificially inflating t
+            return 0.0, 1.0
+        t_stat = (mx - my) / denom
         # Welch–Satterthwaite df
         with np.errstate(divide='ignore', invalid='ignore'):
             num = (vx / nx + vy / ny) ** 2
@@ -538,6 +663,277 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         p_comb = float(EnhancedFeatureAnalysisEngine._chi2_sf(stat, df))
         return stat, p_comb
 
+    def _km_from_corr(self, fisher_stat: float, corr: Optional[np.ndarray]) -> Tuple[float, float, float, Optional[float]]:
+        """Kost–McDermott correction using a provided correlation matrix (Spearman).
+        Returns (adjusted_stat, p_value, df_km, mean_offdiag_r).
+        """
+        if corr is None or corr.size == 0:
+            k = 0
+        else:
+            k = corr.shape[0]
+        if k <= 1:
+            return fisher_stat, float(self._chi2_sf(fisher_stat, 2 * max(k, 1))), float(2 * max(k, 1)), None
+        mu = 2.0 * k
+        cov_sum = 0.0
+        r_sum = 0.0
+        r_count = 0
+        for i in range(k):
+            for j in range(i + 1, k):
+                r = float(corr[i, j])
+                r_sum += r
+                r_count += 1
+                cov = 3.263 * r + 0.710 * (r ** 2) + 0.027 * (r ** 3)
+                cov_sum += cov
+        mean_r = r_sum / r_count if r_count > 0 else 0.0
+        sigma_sq = 4.0 * k + 2.0 * cov_sum
+        if sigma_sq <= 0:
+            return fisher_stat, float(self._chi2_sf(fisher_stat, 2 * k)), float(2 * k), mean_r
+        c = sigma_sq / (2.0 * mu)
+        df = max(1.0, (2.0 * (mu ** 2)) / sigma_sq)
+        adjusted_stat = fisher_stat / c
+        if _scipy_chi2 is not None:
+            p_val = float(_scipy_chi2.sf(adjusted_stat, df))
+        else:
+            p_val = float(self._chi2_sf(adjusted_stat, int(round(df))))
+        return adjusted_stat, p_val, df, mean_r
+
+    # --- Expectation alignment ---
+    def _evaluate_expectation_alignment(self, task_name: Optional[str]) -> Dict[str, Any]:
+        """Production expectation-alignment with task-specific rules and thresholds.
+        
+        Returns dict with:
+        - grade: A/B/C/D based on key-feature passes
+        - passes: list of features that met directional expectation with p_dir/d/pct/rule
+        - top_drivers: top 2-3 features by |d|
+        - counter_directional: bool if ≥70% features go against expectation
+        - notes: any warnings (gamma guarded, insufficient metrics)
+        - insufficient_metrics: True if key features have no valid d/p_dir
+        """
+        results = getattr(self, 'analysis_results', {}) or {}
+        expected_map = {}
+        passed_features = []
+        key_dir_counts = {'with': 0, 'against': 0}
+        insufficient_metrics = False
+        
+        # Task-specific thresholds for d and %Δ (production values)
+        task_thresholds = {
+            'mental_math': {'alpha': 0.25, 'beta': 0.35, 'gamma': 0.30, 'pct_relative': 5.0},
+            'attention_focus': {'alpha': 0.25, 'beta': 0.35, 'gamma': 0.30, 'pct_relative': 5.0},
+            'visual_imagery': {'alpha': 0.30, 'gamma': 0.30, 'pct_relative': 8.0},
+            'working_memory': {'theta': 0.30, 'beta': 0.35, 'alpha': 0.25, 'pct_relative': 5.0},
+            'cognitive_load': {'theta': 0.30, 'alpha': 0.25, 'pct_relative': 5.0},
+            'motor_imagery': {'alpha': 0.25, 'beta': 0.30, 'pct_relative': 5.0},
+            'language_processing': {'alpha': 0.25, 'beta': 0.35, 'pct_relative': 5.0},
+        }
+        
+        t = (task_name or '').lower()
+        thr = task_thresholds.get(t, {'alpha': 0.25, 'beta': 0.30, 'gamma': 0.30, 'pct_relative': 5.0})
+        
+        # Collect features with expectations
+        for feat, entry in results.items():
+            exp = self._expected_direction(task_name, feat)
+            if exp is None:
+                continue
+            expected_map[feat] = exp
+            
+            # Check observed direction vs expectation
+            delta = float(entry.get('delta', 0.0))
+            dir_ok = (delta > 0 and exp == 'up') or (delta < 0 and exp == 'down')
+            key_dir_counts['with' if dir_ok else 'against'] += 1
+            
+            # Check if feature passed significance with directional criteria
+            if entry.get('significant_change'):
+                flags = entry.get('decision_flags', {})
+                p_dir = flags.get('p_one_sided')
+                d_val = entry.get('effect_size_d')
+                pct = entry.get('percent_change')
+                rule = flags.get('pass_rule', 'unknown')
+                
+                # Determine which band/feature threshold applies
+                feat_thr_d = 0.25  # default
+                if 'alpha' in feat:
+                    feat_thr_d = thr.get('alpha', 0.25)
+                elif 'beta' in feat:
+                    feat_thr_d = thr.get('beta', 0.30)
+                elif 'gamma' in feat:
+                    feat_thr_d = thr.get('gamma', 0.30)
+                elif 'theta' in feat:
+                    feat_thr_d = thr.get('theta', 0.30)
+                
+                # Check if metrics meet threshold
+                d_meets = (d_val is not None and not np.isnan(d_val) and abs(d_val) >= feat_thr_d)
+                pct_meets = (pct is not None and not np.isnan(pct) and abs(pct) >= thr['pct_relative'])
+                
+                passed_features.append({
+                    'feature': feat,
+                    'direction': exp,
+                    'p_dir': p_dir,
+                    'd': d_val,
+                    'pct': pct,
+                    'rule': rule,
+                    'd_meets_thr': d_meets,
+                    'pct_meets_thr': pct_meets,
+                })
+        
+        # Task-specific grading rules (production)
+        t_lower = t.lower()
+        main_pass = False
+        grade_notes = []
+        
+        try:
+            if t_lower == 'mental_math':
+                # Expect: alpha↓, beta↑, beta_alpha_ratio↑, gamma↑
+                alpha_down = any(f['feature'] == 'alpha_relative' and f['direction'] == 'down' 
+                                and f.get('d_meets_thr', False) for f in passed_features)
+                beta_up = any(f['feature'] == 'beta_relative' and f['direction'] == 'up' 
+                             and f.get('d_meets_thr', False) for f in passed_features)
+                ratio_up = any(f['feature'] == 'beta_alpha_ratio' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                gamma_up = any(f['feature'] == 'gamma_relative' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                
+                # Grade A: alpha↓ + (beta↑ or ratio↑) + gamma↑
+                if alpha_down and (beta_up or ratio_up) and gamma_up:
+                    main_pass = True
+                    grade_notes.append('All key features (α↓, β/ratio↑, γ↑) passed')
+                elif alpha_down and (beta_up or ratio_up):
+                    main_pass = True
+                    grade_notes.append('Core features (α↓, β/ratio↑) passed')
+                else:
+                    grade_notes.append('Missing core mental_math features')
+                    
+            elif t_lower == 'attention_focus':
+                # Expect: alpha↓, beta↑, beta_alpha_ratio↑
+                alpha_down = any(f['feature'] == 'alpha_relative' and f['direction'] == 'down' 
+                                and f.get('d_meets_thr', False) for f in passed_features)
+                beta_up = any(f['feature'] == 'beta_relative' and f['direction'] == 'up' 
+                             and f.get('d_meets_thr', False) for f in passed_features)
+                ratio_up = any(f['feature'] == 'beta_alpha_ratio' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                
+                # Grade A: alpha↓ + (beta↑ or ratio↑)
+                if alpha_down and (beta_up or ratio_up):
+                    main_pass = True
+                    grade_notes.append('Core features (α↓, β/ratio↑) passed')
+                else:
+                    grade_notes.append('Missing core attention_focus features')
+                    
+            elif t_lower == 'visual_imagery':
+                alpha_up = any(f['feature'] == 'alpha_relative' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                ratio_up = any(f['feature'] == 'alpha_theta_ratio' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                main_pass = alpha_up or ratio_up
+                grade_notes.append('Visual imagery: alpha/ratio signature')
+                
+            elif t_lower == 'working_memory':
+                theta_up = any(f['feature'].startswith('theta_') and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                alpha_down = any(f['feature'] == 'alpha_relative' and f['direction'] == 'down' 
+                                and f.get('d_meets_thr', False) for f in passed_features)
+                ratio_up = any(f['feature'] == 'beta_alpha_ratio' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                main_pass = theta_up and (alpha_down or ratio_up)
+                grade_notes.append('Working memory: theta + alpha/ratio')
+                
+            elif t_lower == 'cognitive_load':
+                theta_up = any(f['feature'].startswith('theta_') and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                alpha_down = any(f['feature'] == 'alpha_relative' and f['direction'] == 'down' 
+                                and f.get('d_meets_thr', False) for f in passed_features)
+                main_pass = theta_up and alpha_down
+                grade_notes.append('Cognitive load: theta↑ + alpha↓')
+                
+            elif t_lower == 'motor_imagery':
+                alpha_down = any(f['feature'] == 'alpha_relative' and f['direction'] == 'down' 
+                                and f.get('d_meets_thr', False) for f in passed_features)
+                beta_up = any(f['feature'] == 'beta_relative' and f['direction'] == 'up' 
+                             and f.get('d_meets_thr', False) for f in passed_features)
+                ratio_up = any(f['feature'] == 'beta_alpha_ratio' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                main_pass = alpha_down or beta_up or ratio_up
+                grade_notes.append('Motor imagery: alpha↓ or beta↑')
+                
+            elif t_lower == 'language_processing':
+                alpha_down = any(f['feature'] == 'alpha_relative' and f['direction'] == 'down' 
+                                and f.get('d_meets_thr', False) for f in passed_features)
+                ratio_up = any(f['feature'] == 'beta_alpha_ratio' and f['direction'] == 'up' 
+                              and f.get('d_meets_thr', False) for f in passed_features)
+                main_pass = alpha_down and ratio_up
+                grade_notes.append('Language: alpha↓ + ratio↑')
+                
+        except Exception as e:
+            main_pass = False
+            grade_notes.append(f'Grading error: {str(e)}')
+        
+        # Check for insufficient metrics on key features
+        key_features_map = {
+            'mental_math': ['alpha_relative', 'beta_relative', 'beta_alpha_ratio', 'gamma_relative'],
+            'attention_focus': ['alpha_relative', 'beta_relative', 'beta_alpha_ratio'],
+            'visual_imagery': ['alpha_relative', 'alpha_theta_ratio'],
+            'working_memory': ['theta_relative', 'alpha_relative', 'beta_alpha_ratio'],
+            'cognitive_load': ['theta_relative', 'alpha_relative'],
+            'motor_imagery': ['alpha_relative', 'beta_relative', 'beta_alpha_ratio'],
+            'language_processing': ['alpha_relative', 'beta_alpha_ratio'],
+        }
+        key_feats = key_features_map.get(t_lower, [])
+        missing_metrics = []
+        for kf in key_feats:
+            entry = results.get(kf, {})
+            d_val = entry.get('effect_size_d')
+            p_dir = entry.get('decision_flags', {}).get('p_one_sided')
+            reason = entry.get('reason', '')
+            if d_val is None or np.isnan(d_val) or p_dir is None:
+                missing_metrics.append(f"{kf}({reason if reason else 'no_d_or_p'})")
+        
+        if missing_metrics:
+            insufficient_metrics = True
+            grade_notes.append(f"Insufficient metrics: {', '.join(missing_metrics)}")
+        
+        # Assign grade A/B/C/D
+        grade = 'D'
+        n_pass = len(passed_features)
+        if main_pass and n_pass >= 3:
+            grade = 'A'
+        elif main_pass:
+            grade = 'B'
+        elif n_pass >= 2:
+            grade = 'C'
+        
+        # Counter-directional flag (≥70% features against expectation)
+        total_dir = key_dir_counts['with'] + key_dir_counts['against']
+        counter = False
+        if total_dir >= 3:
+            frac_against = key_dir_counts['against'] / float(total_dir)
+            counter = frac_against >= 0.70
+        
+        # Top 2-3 drivers by |d|
+        drivers = sorted(
+            [{'feature': f['feature'], 'd': abs(f.get('d', 0.0) or 0.0)} for f in passed_features],
+            key=lambda x: x['d'], reverse=True
+        )[:3]
+        
+        # Notes: gamma EMG status
+        notes = []
+        try:
+            task_features = self.calibration_data.get('task', {}).get('features', [])
+            emg_flags = [int(e.get('_emg_guard', 0)) for e in task_features]
+            if any(v == 1 for v in emg_flags):
+                notes.append('Gamma evaluation guarded by EMG flag in some windows')
+        except Exception:
+            pass
+        
+        notes.extend(grade_notes)
+        
+        return {
+            'grade': grade,
+            'passes': passed_features,
+            'top_drivers': drivers,
+            'counter_directional': counter,
+            'notes': notes,
+            'insufficient_metrics': insufficient_metrics,
+        }
+
     # --- Utility: simple blink detection on a window ---
     def _is_blinky_window(self, x: np.ndarray) -> bool:
         """Conservative blink heuristic using robust dispersion (MAD) and proportion.
@@ -582,10 +978,36 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         x = np.asarray(window_data, dtype=float)
         x = x - np.mean(x)
         try:
-            x = BL.notch_filter(x, self.fs, notch_freq=self.mains_hz)
+            # Ensure sample rate present
+            self.fs = float(getattr(self, 'fs', 256.0))
         except Exception:
-            pass
-        freqs, psd = BL.compute_psd(x, self.fs)
+            self.fs = 256.0
+        # PSD via multitaper if available
+        psd = None
+        freqs = None
+        use_multitaper = True
+        if use_multitaper:
+            try:
+                from scipy.signal.windows import dpss  # type: ignore
+                from numpy.fft import rfft, rfftfreq
+                K = max(1, int(self.mt_tapers))
+                NW = 2.5  # time-bandwidth product (typical)
+                tapers = dpss(x.size, NW=NW, Kmax=K, sym=False)
+                psd_accum = None
+                for k in range(K):
+                    xk = x * tapers[k]
+                    Xk = rfft(xk)
+                    Pk = (np.abs(Xk) ** 2) / (self.fs * x.size)
+                    if psd_accum is None:
+                        psd_accum = Pk
+                    else:
+                        psd_accum += Pk
+                psd = psd_accum / float(K)
+                freqs = rfftfreq(x.size, d=1.0 / self.fs)
+            except Exception:
+                pass
+        if psd is None or freqs is None:
+            freqs, psd = BL.compute_psd(x, self.fs)
 
         # Global noise floor for SNR-adapted band powers
         try:
@@ -685,6 +1107,51 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 features[f'{band_name}_power_raw'] = 0.0
                 features[f'{band_name}_relative'] = 0.0
 
+        # High-frequency EMG guard for gamma metrics
+        gamma_windows_total = 1  # This window
+        gamma_windows_kept = 0
+        try:
+            hf_mask = (freqs >= 35) & (freqs <= 45)
+            mid_mask = (freqs >= 20) & (freqs <= 30)
+            hf_power_sum = float(np.trapz(psd[hf_mask], freqs[hf_mask]) if np.any(hf_mask) else 0.0)
+            mid_power_sum = float(np.trapz(psd[mid_mask], freqs[mid_mask]) if np.any(mid_mask) else 0.0)
+            ratio_hf_mid = hf_power_sum / (mid_power_sum + 1e-12)
+            # Spectral slope on 20–45 Hz
+            use_mask = (freqs >= 20) & (freqs <= 45)
+            f_sel = freqs[use_mask]
+            p_sel = psd[use_mask]
+            if f_sel.size >= 3:
+                logf = np.log(f_sel + 1e-12)
+                logp = np.log(p_sel + 1e-18)
+                A = np.vstack([logf, np.ones_like(logf)]).T
+                slope, _ = np.linalg.lstsq(A, logp, rcond=None)[0]
+                emg_flag = bool(ratio_hf_mid > 1.2 or slope > -0.6)
+            else:
+                emg_flag = True  # Not enough freq resolution
+        except Exception:
+            emg_flag = False
+        
+        # Store EMG guard status
+        features['_emg_guard'] = 1 if emg_flag else 0
+        features['_gamma_evaluated'] = 0 if emg_flag else 1
+        
+        if emg_flag:
+            # Remove gamma features and mark as guarded-out
+            for k in list(features.keys()):
+                if k.startswith('gamma_'):
+                    features.pop(k, None)
+            gamma_windows_kept = 0
+        else:
+            gamma_windows_kept = 1
+        
+        # Update session-level gamma statistics (for later reporting)
+        if not hasattr(self, 'gamma_windows_total'):
+            self.gamma_windows_total = 0
+        if not hasattr(self, 'gamma_windows_kept'):
+            self.gamma_windows_kept = 0
+        self.gamma_windows_total += gamma_windows_total
+        self.gamma_windows_kept += gamma_windows_kept
+
         # Cross-band ratios
         alpha = band_powers.get('alpha', 0.0)
         theta = band_powers.get('theta', 0.0)
@@ -772,6 +1239,15 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         
         print(f"Eyes-closed DataFrame shape: {df.shape}")
         print(f"Available feature columns: {list(df.columns)}")
+        try:
+            bands = dict(getattr(BL, 'EEG_BANDS', {}))
+            print(f"Band edges (Hz): {bands}")
+        except Exception:
+            pass
+        try:
+            print(f"Notch mains: {getattr(self, 'mains_hz', 'unknown')} Hz | PSD: multitaper tapers={getattr(self, 'mt_tapers', 3)}")
+        except Exception:
+            pass
         
         for feature in df.columns:
             values = df[feature].values
@@ -823,6 +1299,80 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
     def _get_rng(self) -> np.random.Generator:
         seed = self.config.seed if self.config.seed is not None else int(time.time() * 1000) % (2**32)
         return np.random.default_rng(seed)
+
+    # --- Block utilities (non-overlapping, time-based) ---
+    def _window_duration_sec(self) -> float:
+        try:
+            return float(self.window_samples) / float(self.fs)
+        except Exception:
+            return 2.0
+
+    def _build_blocks(self, features_list: List[Dict[str, Any]], timestamps: List[float]) -> List[Dict[str, Any]]:
+        if not features_list:
+            return []
+        block_sec = float(self.block_seconds)
+        # Use cache keyed by list id and block length when possible
+        cache_key = ("blocks", id(features_list), block_sec)
+        cached = self._cached_block_summaries.get(cache_key)
+        if cached is not None:
+            return cached
+        # Compute block index per window by elapsed time
+        if timestamps and len(timestamps) == len(features_list):
+            t0 = float(timestamps[0])
+            rel = [max(0.0, float(t) - t0) for t in timestamps]
+            block_idx = [int(r // block_sec) for r in rel]
+        else:
+            # Fallback: derive block size by window duration
+            wsec = max(1e-6, self._window_duration_sec())
+            per_block = max(1, int(round(block_sec / wsec)))
+            block_idx = [i // per_block for i in range(len(features_list))]
+        # Aggregate by block index: mean of features present in all entries
+        df = pd.DataFrame(features_list)
+        df['_block'] = block_idx
+        grouped = df.groupby('_block', sort=True)
+        block_df = grouped.mean(numeric_only=True).drop(columns=[c for c in ['_block'] if c in grouped.obj.columns], errors='ignore')
+        # Convert to list of dicts
+        blocks = [row._asdict() if hasattr(row, '_asdict') else row.to_dict() for _, row in block_df.iterrows()]
+        self._cached_block_summaries[cache_key] = blocks
+        return blocks
+
+    def _equalize_blocks(self, base_blocks: List[Dict[str, Any]], task_blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        n_base = len(base_blocks)
+        n_task = len(task_blocks)
+        if n_base == 0 or n_task == 0:
+            return [], []
+        n = min(n_base, n_task)
+        if n_base > n:
+            idx = self._get_rng().choice(n_base, size=n, replace=False)
+            base_blocks = [base_blocks[i] for i in sorted(idx)]
+        else:
+            base_blocks = base_blocks[:n]
+        if n_task > n:
+            idx = self._get_rng().choice(n_task, size=n, replace=False)
+            task_blocks = [task_blocks[i] for i in sorted(idx)]
+        else:
+            task_blocks = task_blocks[:n]
+        return base_blocks, task_blocks
+
+    def _block_spearman_corr(self, base_blocks: List[Dict[str, Any]], task_blocks: List[Dict[str, Any]], features: List[str]) -> np.ndarray:
+        if not features:
+            return np.empty((0, 0))
+        key = ("block_corr", tuple(features), len(base_blocks) + len(task_blocks), self.block_seconds)
+        cached = self._cached_block_corr.get(key)
+        if cached is not None:
+            return cached
+        if not base_blocks and not task_blocks:
+            corr = np.eye(len(features))
+        else:
+            all_blocks = (base_blocks or []) + (task_blocks or [])
+            df = pd.DataFrame(all_blocks)
+            try:
+                corr = df[features].corr(method='spearman').to_numpy()
+                corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+            except Exception:
+                corr = np.eye(len(features))
+        self._cached_block_corr[key] = corr
+        return corr
 
     def _compute_effect_value(self, feature: str, task_mean: float, baseline_stats: Dict[str, Any]) -> float:
         b_mean = float(baseline_stats[feature]['mean'])
@@ -879,7 +1429,8 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
     def _spearman_corr(self, baseline_df: Optional[pd.DataFrame], features: List[str]) -> np.ndarray:
         if not features:
             return np.empty((0, 0))
-        key = ("spearman", len(baseline_df) if baseline_df is not None else 0, tuple(features))
+        baseline_len = len(baseline_df) if baseline_df is not None else 0
+        key = ("spearman", baseline_len, tuple(features))
         cached = self._cached_corr_matrices.get(key)
         if cached is not None:
             return cached
@@ -894,6 +1445,92 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 corr = np.eye(len(features))
         self._cached_corr_matrices[key] = corr
         return corr
+
+    def _effective_feature_count(self, baseline_df: Optional[pd.DataFrame], features: List[str]) -> float:
+        if not features:
+            return 0.0
+        try:
+            corr = self._spearman_corr(baseline_df, features)
+            if corr.size == 0:
+                return float(len(features))
+            eigvals = np.linalg.eigvalsh(corr)
+            eff = float(np.sum(np.clip(eigvals, 0.0, 1.0)))
+            return max(1.0, eff)
+        except Exception:
+            return float(len(features))
+
+    def _correlation_guard_factor(self, baseline_df: Optional[pd.DataFrame], features: List[str]) -> float:
+        if not self.config.correlation_guard or not features:
+            return 1.0
+        nominal = max(1.0, float(len(features)))
+        eff = self._effective_feature_count(baseline_df, features)
+        factor = eff / nominal
+        return float(np.clip(factor, 0.05, 1.0))
+
+    # --- Directional priors and thresholds ---
+    def _feature_classification(self, feature: str) -> Tuple[str, bool, bool]:
+        name = feature.lower()
+        band = 'other'
+        if name.startswith('alpha_') or ('alpha' in name and 'ratio' not in name):
+            band = 'alpha'
+        if name.startswith('beta_') or ('beta' in name and 'ratio' not in name):
+            band = 'beta'
+        if name.startswith('theta_') or ('theta' in name and 'ratio' not in name):
+            band = 'theta'
+        if name.startswith('gamma_') or ('gamma' in name and 'ratio' not in name):
+            band = 'gamma'
+        is_ratio = ('ratio' in name)
+        is_relative = name.endswith('_relative') or is_ratio
+        if is_ratio and band == 'other':
+            band = 'ratio'
+        return band, is_relative, is_ratio
+
+    def _thresholds_for_feature(self, feature: str) -> Tuple[float, float]:
+        band, is_relative, is_ratio = self._feature_classification(feature)
+        d_map = {
+            'gamma': 0.30,
+            'ratio': 0.30,
+            'beta': 0.35,
+            'theta': 0.30,
+            'alpha': 0.25,
+        }
+        d_thr = d_map.get(band, 0.30)
+        pct_thr = 0.05 if (is_relative or is_ratio) else 0.10
+        return d_thr, pct_thr * 100.0
+
+    def _expected_direction(self, task_name: Optional[str], feature: str) -> Optional[str]:
+        t = (task_name or '').lower()
+        f = feature.lower()
+        if t == 'mental_math':
+            if f.startswith('alpha_'): return 'down'
+            if f.startswith('beta_') or 'beta_alpha_ratio' in f: return 'up'
+            if f.startswith('gamma_'): return 'up'
+            if f == 'alpha_theta_ratio': return 'down'
+        elif t == 'visual_imagery':
+            if f.startswith('alpha_'): return 'up'
+            if f == 'alpha_theta_ratio': return 'up'
+            if 'beta_alpha_ratio' in f: return 'down'
+        elif t == 'working_memory':
+            if f.startswith('theta_'): return 'up'
+            if f.startswith('alpha_'): return 'down'
+            if 'beta_alpha_ratio' in f or f.startswith('beta_'): return 'up'
+            if f.startswith('gamma_'): return 'up'
+        elif t == 'attention_focus':
+            if f.startswith('alpha_'): return 'down'
+            if f.startswith('beta_') or 'beta_alpha_ratio' in f: return 'up'
+            if f.startswith('theta_'): return 'down'
+        elif t == 'language_processing':
+            if f.startswith('beta_') or 'beta_alpha_ratio' in f: return 'up'
+            if f.startswith('alpha_'): return 'down'
+            if f.startswith('gamma_'): return 'up'
+        elif t == 'motor_imagery':
+            if f.startswith('alpha_'): return 'down'
+            if 'beta_alpha_ratio' in f or f.startswith('beta_'): return 'up'
+        elif t == 'cognitive_load':
+            if f.startswith('theta_'): return 'up'
+            if f.startswith('alpha_'): return 'down'
+            if f.startswith('beta_') or 'beta_alpha_ratio' in f: return 'up'
+        return None
 
     def _kost_mcdermott_pvalue(self, fisher_stat: float, features: List[str], baseline_df: Optional[pd.DataFrame]) -> Tuple[float, float, float]:
         k = len(features)
@@ -1065,18 +1702,141 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         if n == 0:
             return 1.0
         pos = int(np.sum(diff > 0))
-        # Two-sided sign test using binomial distribution
         tail = min(pos, n - pos)
-        cumulative = sum(math.comb(n, k) for k in range(tail + 1))
-        base_prob = cumulative / (2 ** n)
-        if n % 2 == 0 and pos == n - pos:
-            # Center term shouldn't be double-counted
-            center_prob = math.comb(n, tail) / (2 ** n)
-            p_val = min(1.0, max(0.0, 2.0 * base_prob - center_prob))
-        else:
-            p_val = min(1.0, max(0.0, 2.0 * base_prob))
-        return p_val
 
+        # Prefer SciPy's exact binomial implementation when available
+        if _scipy_binomtest is not None:
+            try:
+                return float(_scipy_binomtest(pos, n, 0.5).pvalue)
+            except Exception:
+                pass
+
+        if n <= 60:
+            # Exact probability via cumulative binomial; manageable for small n
+            cumulative = math.fsum(math.comb(n, k) for k in range(tail + 1))
+            base_prob = cumulative / (2 ** n)
+            if n % 2 == 0 and pos == n - pos:
+                center_prob = math.comb(n, tail) / (2 ** n)
+                p_val = 2.0 * base_prob - center_prob
+            else:
+                p_val = 2.0 * base_prob
+            return float(min(1.0, max(0.0, p_val)))
+
+        # Normal approximation with continuity correction for large n
+        mean = n / 2.0
+        std = math.sqrt(n / 4.0) + 1e-12
+        z = (abs(pos - mean) - 0.5) / std
+        z = max(0.0, z)
+        p_val = math.erfc(z / math.sqrt(2.0))
+        return float(min(1.0, max(0.0, p_val)))
+
+    def _permutation_sum_p_blocks(
+        self,
+        per_feature_blocks: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    ) -> Tuple[Optional[float], Optional[float], bool, Optional[float], Dict[str, Any]]:
+        """Block-level permutation for SumP.
+        Returns (observed_sum, perm_p, used_permutation_flag, ess_blocks, metadata).
+        """
+        # Always run block permutations if n_perm > 0 (independent of mode)
+        n_perm = int(self.config.n_perm)
+        if n_perm <= 0:
+            return None, None, False, None, {}
+        if not per_feature_blocks:
+            return None, None, False, None, {}
+        
+        rng = self._get_rng()
+        seed_val = getattr(self.config, 'seed', None)
+        
+        # Determine equalized block count (ESS per condition) by downsampling larger side
+        any_item = next(iter(per_feature_blocks.values()))
+        n_task = len(any_item[0])
+        n_base = len(any_item[1])
+        n = min(n_task, n_base)
+        if n == 0:
+            return None, None, False, 0.0, {}
+        ess = float(n)
+        
+        # Log metadata
+        metadata = {
+            'perm_unit': 'block',
+            'block_len_sec': float(self.block_seconds),
+            'n_blocks_used': int(n),
+            'ess_baseline': int(n),
+            'ess_task': int(n),
+            'n_baseline_total': int(n_base),
+            'n_task_total': int(n_task),
+            'n_perm': int(n_perm),
+            'seed': seed_val,
+        }
+        # Observed sum of p-values using block means per feature
+        obs_sum = 0.0
+        for f, (task_arr, base_arr) in per_feature_blocks.items():
+            # Equalize arrays to n
+            t = np.asarray(task_arr, dtype=float)
+            b = np.asarray(base_arr, dtype=float)
+            if t.size > n:
+                idx = rng.choice(t.size, size=n, replace=False)
+                t = t[idx]
+            else:
+                t = t[:n]
+            if b.size > n:
+                idx = rng.choice(b.size, size=n, replace=False)
+                b = b[idx]
+            else:
+                b = b[:n]
+            _, p = self._welch_ttest(t, b)
+            p = float(np.nan_to_num(p, nan=1.0))
+            obs_sum += p
+        
+        # Log start of permutation
+        print(f"[SumP Block Perm] Starting {n_perm} permutations on {len(per_feature_blocks)} features, {n} blocks per condition...")
+        
+        # Permutation distribution
+        perm_vals = np.zeros(n_perm, dtype=float)
+        for i in range(n_perm):
+            s = 0.0
+            for f, (task_arr, base_arr) in per_feature_blocks.items():
+                t = np.asarray(task_arr, dtype=float)
+                b = np.asarray(base_arr, dtype=float)
+                # Downsample to n if either side is larger
+                if t.size > n:
+                    idx = rng.choice(t.size, size=n, replace=False)
+                    t = t[idx]
+                else:
+                    t = t[:n]
+                if b.size > n:
+                    idx = rng.choice(b.size, size=n, replace=False)
+                    b = b[idx]
+                else:
+                    b = b[:n]
+                # Concatenate and permute
+                comb = np.concatenate([t, b])
+                comb_len = len(comb)  # Actual combined length (may be < 2*n if original arrays were shorter)
+                perm_idx = rng.permutation(comb_len)
+                # Split permuted indices to create task and baseline permutations
+                split_point = len(t)  # Use actual task array length, not n
+                t_perm = comb[perm_idx[:split_point]]
+                b_perm = comb[perm_idx[split_point:]]
+                _, p = self._welch_ttest(t_perm, b_perm)
+                s += float(np.nan_to_num(p, nan=1.0))
+            perm_vals[i] = s
+            # Progress callback: update every 1% (or every iteration for small n_perm)
+            progress_interval = max(1, n_perm // 100)
+            if self._perm_progress_callback is not None and ((i + 1) % progress_interval == 0 or (i + 1) == n_perm):
+                try:
+                    self._perm_progress_callback(i + 1, n_perm)
+                except Exception:
+                    pass
+            # Console logging for visibility (every 10%)
+            if (i + 1) % max(1, n_perm // 10) == 0 or (i + 1) == n_perm:
+                print(f"[SumP Block Perm] Progress: {i+1}/{n_perm} ({100*(i+1)//n_perm}%)")
+        less_equal = float(np.sum(perm_vals <= obs_sum))
+        perm_p = (less_equal + 1.0) / (n_perm + 1.0)
+        
+        # Log summary
+        print(f"[SumP Block Perm] unit=block, block_len={metadata['block_len_sec']}s, n_blocks={metadata['n_blocks_used']}, n_perm={metadata['n_perm']}, seed={metadata['seed']}")
+        
+        return obs_sum, float(perm_p), True, ess, metadata
 
     def analyze_task_data(self):
         """Analyze the current task synchronously and return per-feature analysis results."""
@@ -1140,28 +1900,80 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             print(f"[ENGINE] Traceback: {traceback.format_exc()}")
         for feature in available_features:
             if baseline_df is None or feature not in baseline_df.columns:
+                # Mark as NA if no baseline available
+                self.analysis_results[feature] = {
+                    'delta': np.nan,
+                    'percent_change': np.nan,
+                    'effect_size_d': np.nan,
+                    'p_value': 1.0,
+                    'significant_change': False,
+                    'reason': 'NA (no baseline)'
+                }
                 continue
             if getattr(self, '_analysis_cancelled', False):
                 print("⚠️ Analysis cancelled during feature loop; returning partial results.")
                 break
-            task_vals = np.asarray(task_df[feature].dropna().values, dtype=float)
-            base_vals = np.asarray(baseline_df[feature].dropna().values, dtype=float)
-            if task_vals.size == 0 or base_vals.size == 0:
+            
+            # Check if this is a gamma feature that was guarded out
+            is_gamma = feature.startswith('gamma_')
+            gamma_guarded = False
+            if is_gamma:
+                # Check if gamma was evaluated in task windows
+                gamma_eval_flags = [int(f.get('_gamma_evaluated', 1)) for f in task_features if isinstance(f, dict)]
+                gamma_guarded = all(f == 0 for f in gamma_eval_flags) if gamma_eval_flags else False
+                if gamma_guarded:
+                    self.analysis_results[feature] = {
+                        'delta': np.nan,
+                        'percent_change': np.nan,
+                        'effect_size_d': np.nan,
+                        'p_value': 1.0,
+                        'significant_change': False,
+                        'reason': 'Guarded-out (EMG)',
+                        'gamma_evaluated': False,
+                    }
+                    continue
+            
+            # Use BLOCK SUMMARIES for consistent unit with SumP and ESS
+            # Extract block-level values for this feature
+            if eb_eq and et_eq:  # Use equalized blocks from KM computation
+                task_block_vals = np.asarray([blk.get(feature) for blk in et_eq if feature in blk and np.isfinite(blk.get(feature))], dtype=float)
+                base_block_vals = np.asarray([blk.get(feature) for blk in eb_eq if feature in blk and np.isfinite(blk.get(feature))], dtype=float)
+            else:
+                # Fallback: use all windows if blocks aren't available
+                task_block_vals = np.asarray(task_df[feature].dropna().values, dtype=float)
+                base_block_vals = np.asarray(baseline_df[feature].dropna().values, dtype=float)
+            
+            # Require minimal sample sizes per group to ensure stable inference
+            if task_block_vals.size < 3 or base_block_vals.size < 3:
+                self.analysis_results[feature] = {
+                    'delta': np.nan,
+                    'percent_change': np.nan,
+                    'effect_size_d': np.nan,
+                    'p_value': 1.0,
+                    'significant_change': False,
+                    'reason': f'Insufficient samples (task={task_block_vals.size}, base={base_block_vals.size})'
+                }
                 continue
 
-            b_mean = float(self.baseline_stats[feature]['mean'])
-            b_std = float(self.baseline_stats[feature]['std'])
-            t_mean = float(np.mean(task_vals))
-            t_std = float(np.std(task_vals) + 1e-12)
+            b_mean = float(np.mean(base_block_vals))
+            b_std = float(np.std(base_block_vals) + 1e-12)
+            t_mean = float(np.mean(task_block_vals))
+            t_std = float(np.std(task_block_vals) + 1e-12)
 
-            pooled = np.sqrt(((np.var(task_vals, ddof=1) + np.var(base_vals, ddof=1)) / 2.0) + 1e-12)
-            d = (t_mean - b_mean) / (pooled + 1e-12)
+            var_task = float(np.var(task_block_vals, ddof=1)) if task_block_vals.size > 1 else 0.0
+            var_base = float(np.var(base_block_vals, ddof=1)) if base_block_vals.size > 1 else 0.0
+            pooled = float(np.sqrt(max(0.0, (var_task + var_base) / 2.0)))
+            degenerate_var = pooled <= 1e-12
+            d = 0.0 if degenerate_var else (t_mean - b_mean) / (pooled + 1e-12)
             effect_sizes.append(abs(d))
 
             try:
-                _, p_val = self._welch_ttest(task_vals, base_vals)
+                if degenerate_var:
+                    t_stat, p_val = 0.0, 1.0
+                else:
+                    t_stat, p_val = self._welch_ttest(task_block_vals, base_block_vals)
             except Exception:
-                p_val = 1.0
+                t_stat, p_val = 0.0, 1.0
 
             z = (t_mean - b_mean) / (b_std + 1e-12)
             ratio = (t_mean / (abs(b_mean) + 1e-12)) if b_mean != 0 else np.inf
@@ -1183,18 +1995,27 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 'baseline_task_ratio': ratio,
                 'p_value': p_val,
                 'p_value_welch': p_val,
+                't_stat': float(t_stat),
                 'discrete_index': discretized['discrete_index'],
                 'discretization_bins': discretized['bins'],
                 'log2_ratio': float(np.log2(abs(ratio) + 1e-12)) if np.isfinite(ratio) else np.inf,
                 'significant_change': False,  # updated post-FDR or heuristics
                 'bin_sig': 0,
+                'reason': None,  # Will be set if degenerate or guarded
+                'gamma_evaluated': True,  # Default true; overridden for guarded gamma
+                'n_blocks_task': int(task_block_vals.size),  # Log actual unit count
+                'n_blocks_baseline': int(base_block_vals.size),
             }
+            
+            # Add reason if degenerate variance
+            if degenerate_var:
+                result_entry['reason'] = 'Degenerate variance (pooled ≈ 0)'
 
             self.analysis_results[feature] = result_entry
             combo_features.append(feature)
             p_for_combo.append(float(np.nan_to_num(p_val, nan=1.0)))
             composite_contrib.append(float(np.nan_to_num(p_val, nan=1.0)))
-            per_feature_perm[feature] = (task_vals, base_vals)
+            per_feature_perm[feature] = (task_block_vals, base_block_vals)  # Use blocks for permutation too
             processed_features += 1
             # Feature-level progress strategy:
             #  - Always emit for the first 10 features to guarantee early visible motion even for huge datasets
@@ -1220,33 +2041,142 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             print("❌ ERROR: No overlapping features between baseline and task for analysis")
             return None
 
-        if self.config.is_feature_selection:
-            rejected, q_vals = self._bh_fdr(p_for_combo, alpha=self.config.alpha)
-            q_map = {combo_features[i]: q_vals[i] for i in range(len(combo_features))}
-            for i, feature in enumerate(combo_features):
-                q_val = q_map[feature]
-                is_sig = rejected[i]
-                self.analysis_results[feature]['q_value'] = q_val
-                self.analysis_results[feature]['significant_change'] = bool(is_sig)
-                self.analysis_results[feature]['bin_sig'] = int(is_sig)
-            sig_feature_count = int(np.sum(rejected))
-            sig_prop = sig_feature_count / max(1, len(combo_features))
+        corr_guard_factor = self._correlation_guard_factor(baseline_df, combo_features)
+        eff_feature_count = self._effective_feature_count(baseline_df, combo_features) if combo_features else 0.0
+        local_alpha = max(1e-9, self.config.alpha * corr_guard_factor)
+        fdr_alpha = max(1e-9, self.config.fdr_alpha * corr_guard_factor)
+        if combo_features:
+            rejected, q_vals = self._bh_fdr(p_for_combo, alpha=fdr_alpha)
         else:
-            for feature in combo_features:
-                self.analysis_results[feature]['q_value'] = None
-                self.analysis_results[feature]['significant_change'] = False
-            sig_feature_count = None
-            sig_prop = None
+            rejected, q_vals = [], []
+
+        significant_flags: List[bool] = []
+        for idx, feature in enumerate(combo_features):
+            entry = self.analysis_results[feature]
+            q_val = q_vals[idx] if idx < len(q_vals) else None
+            entry['q_value'] = q_val
+            p_two = entry.get('p_value')
+            t_stat = float(entry.get('t_stat', 0.0))
+            expected = self._expected_direction(self.current_task, feature)
+            p_dir = p_two
+            delta = float(entry.get('delta', 0.0))
+            dir_ok = True
+            if expected == 'up':
+                p_dir = (p_two / 2.0) if p_two is not None and t_stat > 0 else (1.0 - (p_two or 1.0) / 2.0)
+                dir_ok = delta > 0
+            elif expected == 'down':
+                p_dir = (p_two / 2.0) if p_two is not None and t_stat < 0 else (1.0 - (p_two or 1.0) / 2.0)
+                dir_ok = delta < 0
+            
+            # Store one-sided p when directional prior exists
+            entry['p_one_sided'] = p_dir if expected else p_two
+            entry['expected_direction'] = expected
+            
+            d_thr, pct_thr = self._thresholds_for_feature(feature)
+            effect_ok = (abs(entry.get('effect_size_d', 0.0)) >= d_thr) and dir_ok
+            pct_ok = (abs(entry.get('percent_change', 0.0)) >= pct_thr) and dir_ok
+            p_ok = (p_dir is not None) and (p_dir <= local_alpha) and dir_ok
+            q_ok = (q_val is not None) and (q_val <= fdr_alpha)
+            pass_rule = None
+            decision = False
+            if p_ok:
+                decision = True
+                pass_rule = 'p'
+            if not decision and effect_ok:
+                decision = True
+                pass_rule = 'd'
+            if not decision and pct_ok:
+                decision = True
+                pass_rule = 'pct'
+            entry['significant_change'] = decision
+            entry['bin_sig'] = 1 if decision else 0
+            entry['decision_flags'] = {
+                'p_pass': p_ok,
+                'p_one_sided': p_dir,
+                'q_pass': q_ok,
+                'effect_pass': effect_ok,
+                'percent_pass': pct_ok,
+                'bh_rejected': rejected[idx] if idx < len(rejected) else False,
+                'expected_direction': expected,
+                'direction_ok': dir_ok,
+                'pass_rule': pass_rule,
+            }
+            entry['thresholds'] = {
+                'alpha': local_alpha,
+                'fdr_alpha': fdr_alpha,
+                'min_effect_size': d_thr,
+                'min_percent_change': pct_thr,
+                'correlation_guard_factor': corr_guard_factor,
+            }
+            significant_flags.append(decision)
+
+        sig_feature_count = int(np.sum(significant_flags))
+        sig_prop = sig_feature_count / max(1, len(combo_features)) if combo_features else 0.0
 
         fisher_stat, fisher_p_naive = self._fishers_method(p_for_combo)
-        km_stat, fisher_p_km, fisher_df = self._kost_mcdermott_pvalue(fisher_stat, combo_features, baseline_df)
+        # Build non-overlapping blocks for KM correlation and block permutation
+        try:
+            base_timestamps = self.calibration_data.get(chosen_baseline_label, {}).get('timestamps', [])
+            base_blocks = self._build_blocks(baseline_source_features, base_timestamps)
+            task_timestamps = self.calibration_data.get('task', {}).get('timestamps', [])
+            task_blocks = self._build_blocks(task_features, task_timestamps)
+            # Equalize for correlation estimation
+            eb, et = self._equalize_blocks(base_blocks, task_blocks)
+            km_corr = self._block_spearman_corr(eb, et, combo_features)
+        except Exception:
+            km_corr = None
+            eb, et = [], []
+        km_stat, fisher_p_km, fisher_df, km_mean_r = self._km_from_corr(fisher_stat, km_corr)
+        
+        # Log KM correlation details (Task F)
+        k = len(combo_features) if combo_features else 0
+        km_df_ratio = float(fisher_df / max(1.0, 2.0 * k)) if k > 0 and fisher_df else None
+        if km_mean_r is not None and k > 1:
+            try:
+                log_fn = getattr(self, 'log_message', None)
+                msg = (
+                    f"KM correlation: k={k}, mean_offdiag_r={km_mean_r:.4f}, "
+                    f"df_KM={fisher_df:.2f}, df_KM/(2k)={km_df_ratio:.3f}"
+                )
+                if callable(log_fn):
+                    log_fn(msg)
+                else:
+                    print(f"[ENGINE] {msg}")
+            except Exception:
+                pass
+        
         fisher_sig = fisher_p_km < self.config.alpha if fisher_p_km is not None else False
 
-        observed_sum = float(np.sum(p_for_combo)) if p_for_combo else None
-        perm_used = False
+        # Block-based SumP permutation (ALWAYS RUN if n_perm > 0, regardless of mode)
+        observed_sum = None
         sum_p_perm_p = None
-        if observed_sum is not None:
-            observed_sum, sum_p_perm_p, perm_used = self._permutation_sum_p(per_feature_perm, observed_sum)
+        perm_used = False
+        ess_blocks = None
+        perm_meta = {}
+        try:
+            # Build per-feature block means for permutation
+            per_feature_blocks: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+            # Equalize to ensure matched exposure for permutation
+            eb_eq, et_eq = self._equalize_blocks(base_blocks, task_blocks)
+            ess_blocks = float(min(len(eb_eq), len(et_eq))) if eb_eq and et_eq else 0.0
+            if ess_blocks and combo_features:
+                for f in combo_features:
+                    tb = np.asarray([blk.get(f) for blk in et_eq if f in blk and np.isfinite(blk.get(f))], dtype=float)
+                    bb = np.asarray([blk.get(f) for blk in eb_eq if f in blk and np.isfinite(blk.get(f))], dtype=float)
+                    if tb.size > 0 and bb.size > 0:
+                        per_feature_blocks[f] = (tb, bb)
+            # Run permutations if we have any valid features with blocks
+            if per_feature_blocks and self.config.n_perm > 0:
+                observed_sum, sum_p_perm_p, perm_used, _ess, perm_meta = self._permutation_sum_p_blocks(per_feature_blocks)
+                if ess_blocks == 0.0:
+                    ess_blocks = _ess
+            elif self.config.n_perm > 0 and combo_features:
+                # Log why permutations didn't run
+                print(f"[SumP Skip] No valid blocks for permutation (ess_blocks={ess_blocks}, combo_features={len(combo_features)}, per_feature_blocks={len(per_feature_blocks)})")
+        except Exception as e:
+            print(f"[SumP Block Error] {e}")
+            import traceback
+            traceback.print_exc()
         sum_p_sig = (sum_p_perm_p is not None) and (sum_p_perm_p < self.config.alpha)
         sum_p_approx_flag = False
         if observed_sum is not None and sum_p_perm_p is None:
@@ -1266,7 +2196,7 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             adjusted_values = []
             for feature in combo_features:
                 entry = self.analysis_results[feature]
-                val = entry['q_value'] if (self.config.is_feature_selection and entry['q_value'] is not None) else entry['p_value']
+                val = entry['q_value'] if entry.get('q_value') is not None else entry['p_value']
                 adjusted_values.append(max(val, 1e-12))
             composite_score = float(np.sum(-np.log10(adjusted_values)))
 
@@ -1280,8 +2210,8 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             task_norm = task_vec / (np.linalg.norm(task_vec) + 1e-12)
             cosine_sim = float(np.dot(base_norm, task_norm))
             cosine_dist = float(1.0 - cosine_sim)
+            perms = int(max(1, min(getattr(self.config, 'n_perm', 1000), 5000)))
             rng = self._get_rng()
-            perms = min(200, self.config.n_perm)
             exceed = 0
             for _ in range(perms):
                 shuf = rng.permutation(base_vec)
@@ -1293,6 +2223,21 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         except Exception:
             pass
 
+        decision_block = {
+            'enabled': True,
+            'sig_feature_count': sig_feature_count,
+            'sig_prop': sig_prop,
+            'alpha': local_alpha,
+            'fdr_alpha': fdr_alpha,
+            'correlation_guard_factor': corr_guard_factor,
+            'correlation_guard_active': self.config.correlation_guard,
+            'effective_feature_count': eff_feature_count,
+            'nominal_feature_count': len(combo_features),
+            'bh_rejections': int(np.sum(rejected)) if rejected else 0,
+            'min_effect_size': self.config.min_effect_size,
+            'min_percent_change': self.config.min_percent_change,
+        }
+
         self.task_summary = {
             'fisher': {
                 'stat': fisher_stat,
@@ -1300,6 +2245,9 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 'km_stat': km_stat,
                 'km_p': fisher_p_km,
                 'km_df': fisher_df,
+                'km_df_ratio': km_df_ratio,
+                'km_mean_r': km_mean_r,
+                'k_features': k,
                 'significant': fisher_sig,
                 'alpha': self.config.alpha,
             },
@@ -1309,12 +2257,19 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 'significant': sum_p_sig,
                 'permutation_used': perm_used,
                 'approximate': sum_p_approx_flag,
+                'metadata': perm_meta,
             },
-            'feature_selection': {
-                'enabled': self.config.is_feature_selection,
-                'sig_feature_count': sig_feature_count,
-                'sig_prop': sig_prop,
-            } if self.config.is_feature_selection else None,
+            'permutation': {
+                'preset': getattr(self.config, 'runtime_preset', None),
+                'n_perm': int(getattr(self.config, 'n_perm', 0)),
+                'seed': getattr(self.config, 'seed', None),
+            },
+            'ess': {
+                'block_seconds': float(self.block_seconds),
+                'baseline_blocks': int(ess_blocks) if ess_blocks is not None else None,
+                'task_blocks': int(ess_blocks) if ess_blocks is not None else None,
+            },
+            'feature_selection': decision_block,
             'composite': {
                 'score': composite_score,
                 'ranking_only': True,
@@ -1325,6 +2280,7 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
                 'p_value': cosine_p,
             },
             'effect_size_mean': mean_effect_size,
+            'expectation': self._evaluate_expectation_alignment(self.current_task),
         }
 
         self.composite_summary = self.task_summary
@@ -1393,10 +2349,84 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             except Exception:
                 pass
 
-        tasks = self.calibration_data.get('tasks', {}) or {}
+        raw_tasks = self.calibration_data.get('tasks', {}) or {}
+        log_fn = getattr(self, 'log_message', None)
+        normalized_tasks: Dict[str, Dict[str, Any]] = {}
+        skipped_tasks: List[Tuple[str, str]] = []
+        for task_name, raw_data in raw_tasks.items():
+            if not isinstance(raw_data, dict):
+                skipped_tasks.append((task_name, "invalid task container"))
+                continue
+            raw_features = raw_data.get('features') or []
+            if not isinstance(raw_features, list):
+                skipped_tasks.append((task_name, "feature bucket is not a list"))
+                continue
+            timestamps_container = raw_data.get('timestamps')
+            if isinstance(timestamps_container, (list, tuple)):
+                raw_timestamps = list(timestamps_container)
+            else:
+                raw_timestamps = []
+            cleaned_features: List[Dict[str, Any]] = []
+            cleaned_timestamps: List[Any] = []
+            for idx, entry in enumerate(raw_features):
+                if not isinstance(entry, dict):
+                    continue
+                if not entry:
+                    continue
+                cleaned_features.append(entry)
+                timestamp_value = raw_timestamps[idx] if idx < len(raw_timestamps) else None
+                cleaned_timestamps.append(timestamp_value)
+            if not cleaned_features:
+                skipped_tasks.append((task_name, "no valid feature windows recorded"))
+                continue
+            normalized_tasks[task_name] = {
+                'features': cleaned_features,
+                'timestamps': cleaned_timestamps,
+            }
+        if skipped_tasks:
+            for task_name, reason in skipped_tasks:
+                msg = f"Skipping task '{task_name}' in multi-task analysis: {reason}."
+                try:
+                    if callable(log_fn):
+                        log_fn(msg)
+                    else:
+                        print(f"[ENGINE] {msg}")
+                except Exception:
+                    print(f"[ENGINE] {msg}")
+        tasks = normalized_tasks
+        if not tasks:
+            msg = "Multi-task analysis skipped: no tasks with valid feature data were recorded."
+            try:
+                if callable(log_fn):
+                    log_fn(msg)
+                else:
+                    print(f"[ENGINE] {msg}")
+            except Exception:
+                print(f"[ENGINE] {msg}")
+            self.multi_task_results = {
+                'per_task': {},
+                'combined': {
+                    'analysis': {},
+                    'summary': {},
+                    'export_full': {},
+                    'export_integer': {},
+                },
+                'across_task': {},
+            }
+            return self.multi_task_results
+
         task_bucket = self.calibration_data.setdefault('task', {'features': [], 'timestamps': []})
-        original_task_features = list(task_bucket.get('features', []))
-        original_task_timestamps = list(task_bucket.get('timestamps', []))
+        original_task_features_src = task_bucket.get('features')
+        if isinstance(original_task_features_src, (list, tuple)):
+            original_task_features = list(original_task_features_src)
+        else:
+            original_task_features = []
+
+        original_task_timestamps_src = task_bucket.get('timestamps')
+        if isinstance(original_task_timestamps_src, (list, tuple)):
+            original_task_timestamps = list(original_task_timestamps_src)
+        else:
+            original_task_timestamps = []
         per_task_results: Dict[str, Any] = {}
         # Total steps for general progress: each individual task + 1 combined step
         total_general_steps = len(tasks) + 1
@@ -1479,9 +2509,55 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             return {}
         if not self.baseline_stats:
             return {}
-        task_names = sorted(tasks.keys())
+
+        log_fn = getattr(self, 'log_message', None)
+        valid_tasks: Dict[str, Dict[str, Any]] = {}
+        valid_task_names: List[str] = []
+        skipped: List[str] = []
+        for name in sorted(tasks.keys()):
+            data = tasks.get(name)
+            if not isinstance(data, dict):
+                skipped.append(name)
+                continue
+            feature_entries = data.get('features') or []
+            if not isinstance(feature_entries, list):
+                skipped.append(name)
+                continue
+            cleaned_entries = [entry for entry in feature_entries if isinstance(entry, dict) and entry]
+            if not cleaned_entries:
+                skipped.append(name)
+                continue
+            valid_task_names.append(name)
+            valid_tasks[name] = {'features': cleaned_entries, 'timestamps': data.get('timestamps', [])}
+
+        if len(valid_task_names) < 2:
+            if valid_task_names:
+                msg = "Cross-task analysis requires at least two tasks with valid feature data."
+            else:
+                msg = "Cross-task analysis skipped: no tasks contained valid feature data."
+            try:
+                if callable(log_fn):
+                    log_fn(msg)
+                else:
+                    print(f"[ENGINE] {msg}")
+            except Exception:
+                print(f"[ENGINE] {msg}")
+            return {}
+
+        if skipped:
+            skipped_msg = ", ".join(skipped)
+            msg = f"Omitting task(s) without valid feature data from cross-task comparison: {skipped_msg}."
+            try:
+                if callable(log_fn):
+                    log_fn(msg)
+                else:
+                    print(f"[ENGINE] {msg}")
+            except Exception:
+                print(f"[ENGINE] {msg}")
+
+        task_names = valid_task_names
         feature_sets = []
-        for data in tasks.values():
+        for data in valid_tasks.values():
             feat_names = set()
             for entry in data.get('features', []):
                 feat_names.update(entry.keys())
@@ -1497,28 +2573,92 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         feature_sequence: List[str] = []
         omnibus_pvalues: List[float] = []
 
+        # Build per-task block effect arrays per feature
+        # Determine min sessions across tasks (equalized block counts)
+        # NOTE: Currently uses blocks (8s aggregates) not true session counts.
+        # This means 1 task execution with 20 windows → ~2-3 blocks, bypassing Nmin guard.
+        # TODO: Track session boundaries for true session-level omnibus.
+        per_task_blocks: Dict[str, List[Dict[str, Any]]] = {}
+        for task in task_names:
+            flist = valid_tasks[task]['features']
+            tlist = valid_tasks[task].get('timestamps', [])
+            per_task_blocks[task] = self._build_blocks(flist, tlist)
+        # Equalize sessions count by trimming to min length across tasks
+        min_sessions = min(len(v) for v in per_task_blocks.values()) if per_task_blocks else 0
+        
+        # Log block counts per task for diagnosis
+        print(f"[Across-Task] Tasks: {len(task_names)}, Block counts: {{{', '.join([f'{t}:{len(per_task_blocks[t])}' for t in task_names])}}}, min={min_sessions}")
+        
+        if min_sessions < self.nmin_sessions:
+            # Ranking-only mode: insufficient sessions for significance testing
+            msg = (
+                f"⚠ Across-task significance testing disabled: "
+                f"N={min_sessions} sessions < Nmin={self.nmin_sessions}. "
+                f"Showing descriptive rankings only (median effect per task)."
+            )
+            try:
+                if callable(log_fn):
+                    log_fn(msg)
+                else:
+                    print(f"[ENGINE] {msg}")
+            except Exception:
+                print(f"[ENGINE] {msg}")
+            
+            ranking_only: Dict[str, Any] = {}
+            for feature in sorted(common_features):
+                arrays = []
+                for task in task_names:
+                    vals = [blk.get(feature) for blk in per_task_blocks[task] if feature in blk]
+                    arr = np.asarray([v for v in vals if v is not None and np.isfinite(v)], dtype=float)
+                    stats = self.baseline_stats[feature]
+                    mean = float(stats['mean'])
+                    std = float(stats['std'])
+                    eff = (arr - mean) / (std + 1e-12) if self.config.effect_measure == 'z' else (arr - mean)
+                    arrays.append(eff[:min_sessions] if min_sessions > 0 else eff)
+                if not arrays:
+                    continue
+                medians = [float(np.median(a)) if a.size > 0 else 0.0 for a in arrays]
+                order = sorted(range(len(task_names)), key=lambda i: medians[i], reverse=True)
+                ranking = [{ 'task': task_names[idx], 'median_effect': medians[idx], 'rank': r+1 } for r, idx in enumerate(order)]
+                ranking_only[feature] = {
+                    'ranking': ranking,
+                    'sessions': min_sessions,
+                    'significance': 'disabled',
+                }
+            return {
+                'task_order': task_names,
+                'features': ranking_only,
+                'fdr_alpha': self.config.fdr_alpha,
+                'ranking_only': True,
+                'nmin_sessions': self.nmin_sessions,
+                'sessions_used': min_sessions,
+                'message': msg,
+            }
+
         for feature in sorted(common_features):
-            per_task_arrays = []
-            min_len = None
+            # Build per-task effect arrays for this feature; some tasks may have fewer
+            # usable block values (e.g., EMG-guarded gamma removed). Equalize lengths
+            # per-feature to avoid column_stack dimension mismatches.
+            raw_arrays = []
             for task in task_names:
-                values = [entry.get(feature) for entry in tasks[task].get('features', []) if feature in entry]
-                arr = np.asarray([v for v in values if v is not None and np.isfinite(v)], dtype=float)
-                if arr.size == 0:
-                    per_task_arrays = []
-                    break
+                vals = [blk.get(feature) for blk in per_task_blocks[task] if feature in blk]
+                arr = np.asarray([v for v in vals if v is not None and np.isfinite(v)], dtype=float)
                 stats = self.baseline_stats[feature]
                 mean = float(stats['mean'])
                 std = float(stats['std'])
-                if self.config.effect_measure == 'z':
-                    eff = (arr - mean) / (std + 1e-12)
-                else:
-                    eff = arr - mean
-                per_task_arrays.append(eff)
-                min_len = eff.size if min_len is None else min(min_len, eff.size)
-            if not per_task_arrays or min_len is None or min_len < 2:
+                eff = (arr - mean) / (std + 1e-12) if self.config.effect_measure == 'z' else (arr - mean)
+                raw_arrays.append(eff)
+            if not raw_arrays:
                 continue
-            trimmed = [arr[:min_len] for arr in per_task_arrays]
-            data_matrix = np.column_stack(trimmed)
+            # Determine equalized row count for this feature across tasks
+            per_feature_rows = min((a.size for a in raw_arrays), default=0)
+            # Also respect the global min_sessions cap
+            n_rows = min(per_feature_rows, min_sessions)
+            if n_rows < 2:
+                # Not enough paired observations for omnibus
+                continue
+            per_task_arrays = [a[:n_rows] for a in raw_arrays]
+            data_matrix = np.column_stack(per_task_arrays)
 
             method_used = self.config.omnibus
             if self.config.omnibus == 'RM-ANOVA' and _scipy_f_oneway is not None:
@@ -1604,7 +2744,11 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
 
 
 class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
+    battery_update = QtCore.Signal(object, object)
+
     def __init__(self, user_os, parent=None, config: Optional[EnhancedAnalyzerConfig] = None):
+        self.user_os = user_os
+        self._normalized_os = (user_os or "").strip().lower()
         self.config = config or EnhancedAnalyzerConfig()
         # Provide fallback methods BEFORE base __init__ so signal connections succeed
         if not hasattr(self, 'manual_rescan_devices'):
@@ -1641,6 +2785,14 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
 
         # Initialize base window, then swap the engine
         super().__init__(user_os, parent)
+        self._battery_level = None
+        self._battery_version = None
+        self._battery_warning_flag = False
+        self._pending_battery_update = None
+        self._battery_widget = None
+        self.battery_status_label = None
+        self.battery_progress = None
+        self.battery_update.connect(self._apply_battery_update)
         self.feature_engine = EnhancedFeatureAnalysisEngine(config=self.config)
         # Re-link onRaw to the new engine
         BL.onRaw.feature_engine = self.feature_engine
@@ -1648,25 +2800,27 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         self._task_dialog = None
         self._task_timer = None
         self._task_seconds_remaining = 0
+        self._modal_overlay = None
+        self._overlay_refcount = 0
+        self._modal_blur_effect = None
+        self._battery_widgets: List[Dict[str, Any]] = []
+        self._primary_battery_entry: Optional[Dict[str, Any]] = None
+        self._task_overlay_active = False
 
-        # Add Multi-Task Analysis tab (create unconditionally so it's always visible)
         try:
-            multi_tab = QWidget()
-            mt_layout = QVBoxLayout(multi_tab)
-            self.analyze_all_button = QPushButton("Analyze All Tasks")
-            self.analyze_all_button.setEnabled(True)
-            self.analyze_all_button.clicked.connect(self.analyze_all_tasks)
-            mt_layout.addWidget(self.analyze_all_button)
-            # Add a Generate Report for All Tasks button
-            self.generate_all_report_button = QPushButton("Generate Report (All Tasks)")
-            self.generate_all_report_button.setEnabled(True)
-            self.generate_all_report_button.clicked.connect(self.generate_report_all_tasks)
-            mt_layout.addWidget(self.generate_all_report_button)
-            self.multi_task_text = QTextEdit()
-            self.multi_task_text.setReadOnly(True)
-            mt_layout.addWidget(self.multi_task_text)
-            # Add to tabs
-            self.tabs.addTab(multi_tab, "Multi-Task")
+            self._setup_enhanced_multi_task_tab()
+        except Exception:
+            # Keep base tab if enhanced setup fails
+            pass
+
+        try:
+            self._build_stage_header()
+        except Exception:
+            pass
+
+        try:
+            # Ensure the guided workflow starts from the connection tab every launch
+            self._reset_workflow_progress()
         except Exception:
             pass
         
@@ -1676,12 +2830,22 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             self._create_toolbar()
         except Exception:
             pass
+        # Also place a compact battery pill in the tab bar corner so it's always visible next to the tabs
+        try:
+            if hasattr(self, 'tabs') and self.tabs is not None:
+                pill = self._build_battery_indicator()
+                # Top-right corner of the tab bar
+                self.tabs.setCornerWidget(pill, QtCore.Qt.TopRightCorner)
+        except Exception:
+            pass
+        self._attach_extended_eeg_bridge()
+        self._apply_battery_update(self._battery_level, self._battery_version)
 
-        # CRITICAL: Ensure we have a real BrainLink device connected
+        # CRITICAL: Ensure we have a real MindLink device connected
         if not BL.SERIAL_PORT:
-            self.log_message("CRITICAL ERROR: No real BrainLink device found!")
+            self.log_message("CRITICAL ERROR: No real MindLink device found!")
             self.log_message("This enhanced analyzer requires real EEG data - dummy data is NOT acceptable!")
-            self.log_message("Please connect your BrainLink device and restart the application.")
+            self.log_message("Please connect your MindLink device and restart the application.")
             # Keep UI visible but disable analysis-related controls until connected
             try:
                 if hasattr(self, 'eyes_closed_button'):
@@ -1699,11 +2863,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             except Exception:
                 pass
         else:
-            self.log_message(f"SUCCESS: Connected to real BrainLink device: {BL.SERIAL_PORT}")
+            self.log_message(f"SUCCESS: Connected to real MindLink device: {BL.SERIAL_PORT}")
             self.log_message("Real EEG data acquisition is active - no dummy data allowed!")
         
         self._fixation_dialog = None
-        self._audio = AudioFeedback()
+        self._audio = AudioFeedback(user_os)
         # Video playback members
         self._video_player = None  # type: ignore
         self._video_audio = None  # type: ignore
@@ -1729,6 +2893,9 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         except Exception:
             self._all_task_keys = []
 
+        # Gate single-task analysis so it only runs when explicitly requested
+        self._allow_immediate_task_analysis = False
+
         # Remove (hide) legacy manual device / port buttons if base created them
         for _btn_name in ("rescan_button", "manual_port_button"):
             try:
@@ -1738,21 +2905,8 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             except Exception:
                 pass
 
-        # Inject a runtime protocol change button near the existing task selector if possible
-        self.change_protocol_button = None  # type: ignore
-        try:
-            if hasattr(self, 'task_combo') and self.task_combo is not None:
-                _parent = self.task_combo.parentWidget()
-                _layout = _parent.layout() if _parent else None
-                if _layout is not None:
-                    self.change_protocol_button = QPushButton("Change Protocol")
-                    self.change_protocol_button.setToolTip("Switch protocol group (cognitive tasks always retained). Disabled during an active task phase.")
-                    _layout.addWidget(self.change_protocol_button)
-                    self.change_protocol_button.clicked.connect(self._change_protocol_dialog)  # type: ignore
-        except Exception:
-            pass
+        # change_protocol_button created in setup_analysis_tab override
 
-        
         # FIX PLOTTING ISSUE: Replace standard curve with PlotCurveItem and strict ranges
         try:
             # First, remove any existing plot setup from base class
@@ -1967,14 +3121,559 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
 
         text = "\n".join(lines)
         try:
-            self.stats_text.setPlainText(text)
+            self.analysis_summary.setPlainText(text)
+            self.analysis_summary.setVisible(True)
             self.log_message("✓ Report generated")
         except Exception:
             pass
         # NOTE: File save dialog removed from constructor - only show when user explicitly requests it
 
+    def _attach_extended_eeg_bridge(self) -> None:
+        """Route MindLink extended EEG packets into the enhanced UI."""
+        try:
+            current_cb = getattr(BL, 'onExtendEEG')
+        except AttributeError:
+            return
+        if not callable(current_cb):
+            return
+        if hasattr(current_cb, '_enhanced_original'):
+            try:
+                current_cb._enhanced_window_ref = weakref.ref(self)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return
+
+        original_cb = current_cb
+
+        def _proxy(data, _orig=original_cb):
+            window_ref = getattr(_proxy, '_enhanced_window_ref', None)
+            window = window_ref() if window_ref else None
+            if window is not None:
+                try:
+                    window._handle_extended_eeg(data)
+                except Exception:
+                    pass
+            if _orig is not None:
+                try:
+                    _orig(data)
+                except Exception:
+                    pass
+
+        _proxy._enhanced_original = original_cb  # type: ignore[attr-defined]
+        _proxy._enhanced_window_ref = weakref.ref(self)  # type: ignore[attr-defined]
+        BL.onExtendEEG = _proxy
+
+    def _handle_extended_eeg(self, data: Any) -> None:
+        battery_val = getattr(data, 'battery', None)
+        firmware = getattr(data, 'version', None)
+        try:
+            if battery_val is not None:
+                battery_val = int(float(battery_val))
+        except Exception:
+            battery_val = None
+        self.battery_update.emit(battery_val, firmware)
+
+    def _apply_battery_update(self, level: Optional[int], version: Optional[Any]) -> None:
+        if level is not None:
+            try:
+                level = max(0, min(100, int(level)))
+            except Exception:
+                level = None
+        if level is not None:
+            self._battery_level = level
+        if version is not None:
+            self._battery_version = version
+        entries = getattr(self, '_battery_widgets', [])
+        if not entries:
+            self._pending_battery_update = (self._battery_level, self._battery_version)
+            return
+
+        self._pending_battery_update = None
+
+        active_level = self._battery_level
+        tooltip_parts: List[str] = []
+        if active_level is None:
+            bar_value = 0
+            bar_style = self._battery_stylesheet(None)
+            label_text = "Battery --%"
+            tooltip_parts.append("Battery level pending")
+            self._battery_warning_flag = False
+        else:
+            bar_value = active_level
+            bar_style = self._battery_stylesheet(active_level)
+            label_text = f"Battery {active_level}%"
+            tooltip_parts.append(f"{active_level}% remaining")
+            if active_level <= 20:
+                if not self._battery_warning_flag:
+                    self._battery_warning_flag = True
+                    try:
+                        self.log_message("⚠ MindLink battery low – please recharge soon.")
+                    except Exception:
+                        pass
+            else:
+                self._battery_warning_flag = False
+
+        if self._battery_version is not None:
+            tooltip_parts.append(f"FW v{self._battery_version}")
+        tooltip_text = " | ".join(tooltip_parts) if tooltip_parts else ""
+
+        # Ensure backward compatibility helpers point at primary entry
+        primary = getattr(self, '_primary_battery_entry', None)
+        if primary is not None:
+            self._battery_widget = primary.get('container')
+            self.battery_status_label = primary.get('label')
+            self.battery_progress = primary.get('progress')
+
+        for entry in list(entries):
+            bar = entry.get('progress')
+            label = entry.get('label')
+            container = entry.get('container')
+            if bar is None or label is None:
+                continue
+            try:
+                bar.setRange(0, 100)
+                bar.setValue(bar_value)
+                bar.setStyleSheet(bar_style)
+                label.setText(label_text)
+            except Exception:
+                continue
+            try:
+                for widget in (container, label, bar):
+                    if widget is not None:
+                        widget.setToolTip(tooltip_text)
+            except Exception:
+                pass
+
+    def _battery_stylesheet(self, level: Optional[int]) -> str:
+        if level is None:
+            chunk = "#94a3b8"
+        elif level >= 60:
+            chunk = "#16a34a"
+        elif level >= 30:
+            chunk = "#f59e0b"
+        else:
+            chunk = "#dc2626"
+        return (
+            "QProgressBar {"
+            " background-color: #f1f5f9;"
+            " border: 1px solid #d0d7de;"
+            " border-radius: 6px;"
+            " padding: 0;"
+            " }"
+            "QProgressBar::chunk {"
+            f" background-color: {chunk};"
+            " border-radius: 5px;"
+            " }"
+        )
+
+    def _build_battery_indicator(self) -> QtWidgets.QWidget:
+        container = QtWidgets.QWidget()
+        container.setObjectName("BatteryIndicator")
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+
+        label = QLabel("Battery --%")
+        label.setStyleSheet("color: #475569; font-size: 10px; font-weight: 600;")
+        bar = QtWidgets.QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(10)
+        bar.setFixedWidth(110)
+        bar.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        bar.setStyleSheet(self._battery_stylesheet(None))
+
+        layout.addWidget(label, alignment=QtCore.Qt.AlignLeft)
+        layout.addWidget(bar)
+
+        container.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+
+        entry = {
+            'container': container,
+            'label': label,
+            'progress': bar,
+        }
+        if not hasattr(self, '_battery_widgets'):
+            self._battery_widgets = []
+        self._battery_widgets.append(entry)
+
+        if getattr(self, '_primary_battery_entry', None) is None:
+            self._primary_battery_entry = entry
+            self._battery_widget = container
+            self.battery_status_label = label
+            self.battery_progress = bar
+
+        def _cleanup(_obj=None, entry_ref=entry):
+            try:
+                if entry_ref in self._battery_widgets:
+                    self._battery_widgets.remove(entry_ref)
+            except Exception:
+                pass
+            if getattr(self, '_primary_battery_entry', None) is entry_ref:
+                self._primary_battery_entry = self._battery_widgets[0] if self._battery_widgets else None
+                primary = self._primary_battery_entry
+                if primary is not None:
+                    self._battery_widget = primary.get('container')
+                    self.battery_status_label = primary.get('label')
+                    self.battery_progress = primary.get('progress')
+                else:
+                    self._battery_widget = None
+                    self.battery_status_label = None
+                    self.battery_progress = None
+
+        try:
+            container.destroyed.connect(_cleanup)
+        except Exception:
+            pass
+
+        tooltip_default = "Battery level will appear once the headset streams telemetry."
+        label.setToolTip(tooltip_default)
+        bar.setToolTip(tooltip_default)
+        container.setToolTip(tooltip_default)
+
+        if self._pending_battery_update is not None:
+            pending = self._pending_battery_update
+            self._pending_battery_update = None
+            self._apply_battery_update(*pending)
+        else:
+            self._apply_battery_update(self._battery_level, self._battery_version)
+
+        return container
+
+    def _push_modal_overlay(self) -> Optional[QtWidgets.QWidget]:
+        """Dim the main window and apply a soft blur while a modal dialog is active.
+        Mirrors the working workflow dialog overlay by using a child frame that
+        stays stacked directly above the main window content.
+        """
+        try:
+            count = getattr(self, '_overlay_refcount', 0)
+            if count <= 0:
+                overlay = QtWidgets.QFrame(self)
+                overlay.setObjectName("ModalOverlay")
+                overlay.setGeometry(self.rect())
+                overlay.setStyleSheet("background-color: rgba(15, 23, 42, 200);")
+                overlay.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+                overlay.setFocusPolicy(QtCore.Qt.NoFocus)
+                overlay.setFrameShape(QtWidgets.QFrame.NoFrame)
+                overlay.show()
+                overlay.raise_()
+                self._modal_overlay = overlay
+                central = self.centralWidget()
+                if central is not None:
+                    blur = QtWidgets.QGraphicsBlurEffect(self)
+                    blur.setBlurRadius(11.0)
+                    central.setGraphicsEffect(blur)
+                    self._modal_blur_effect = blur
+            self._overlay_refcount = count + 1
+        except Exception:
+            pass
+        return getattr(self, '_modal_overlay', None)
+
+    def _pop_modal_overlay(self) -> None:
+        try:
+            count = getattr(self, '_overlay_refcount', 0)
+            if count <= 1:
+                overlay = getattr(self, '_modal_overlay', None)
+                if overlay is not None:
+                    overlay.hide()
+                    overlay.deleteLater()
+                self._modal_overlay = None
+                central = self.centralWidget()
+                if central is not None and getattr(self, '_modal_blur_effect', None) is not None:
+                    try:
+                        central.setGraphicsEffect(None)
+                    except Exception:
+                        pass
+                blur_effect = getattr(self, '_modal_blur_effect', None)
+                if blur_effect is not None:
+                    blur_effect.deleteLater()
+                self._modal_blur_effect = None
+                self._overlay_refcount = 0
+            else:
+                self._overlay_refcount = count - 1
+        except Exception:
+            pass
+
+    def _register_task_dialog(self, dlg: QtWidgets.QDialog) -> None:
+        """Ensure dimming overlay & cleanup hooks surround task dialog lifecycle."""
+        if dlg is None:
+            return
+        try:
+            self._task_overlay_active = True
+        except Exception:
+            pass
+        try:
+            dlg.finished.connect(self._on_task_dialog_finished)
+        except Exception:
+            pass
+        try:
+            dlg.destroyed.connect(lambda *_: self._on_task_dialog_finished())
+        except Exception:
+            pass
+
+    def _release_task_overlay(self) -> None:
+        if getattr(self, '_task_overlay_active', False):
+            self._task_overlay_active = False
+            try:
+                self._pop_modal_overlay()
+            except Exception:
+                pass
+
+    def _on_task_dialog_finished(self, *_args: Any) -> None:
+        try:
+            if self._task_dialog is not None:
+                try:
+                    self._task_dialog.deleteLater()
+                except Exception:
+                    pass
+        finally:
+            self._task_dialog = None
+        self._release_task_overlay()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore[override]
+        try:
+            super().resizeEvent(event)
+        finally:
+            overlay = getattr(self, '_modal_overlay', None)
+            if overlay is not None:
+                try:
+                    overlay.setGeometry(self.rect())
+                except Exception:
+                    pass
+
+    def _setup_enhanced_multi_task_tab(self) -> None:
+        """Replace the base multi-task tab with the enhanced workflow scaffold."""
+
+        def _clear_layout(layout_obj: Optional[QtWidgets.QLayout]) -> None:
+            if layout_obj is None:
+                return
+            while layout_obj.count():
+                item = layout_obj.takeAt(0)
+                child_widget = item.widget()
+                if child_widget is not None:
+                    child_widget.setParent(None)
+                child_layout = item.layout()
+                if child_layout is not None:
+                    _clear_layout(child_layout)
+
+        try:
+            tab = self.tabs.widget(self.multi_task_tab_index)
+        except Exception:
+            tab = None
+
+        if tab is None:
+            tab = QWidget()
+            self.multi_task_tab_index = self.tabs.addTab(tab, "Multi-Task")
+
+        layout = tab.layout()
+        if layout is None:
+            layout = QVBoxLayout(tab)
+        else:
+            _clear_layout(layout)
+
+        layout.setSpacing(18)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        intro = QLabel("Run aggregated insights after completing the guided task flow.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#374151; font-weight:600;")
+        layout.addWidget(intro)
+
+        steps = QLabel(
+            "1. Finish baseline and the tasks in the Analysis section.\n"
+            "2. Press 'Analyze All Tasks' to compute the features.\n"
+            "3. Generate the combined report for export."
+        )
+        steps.setWordWrap(True)
+        steps.setStyleSheet("color:#4b5563;")
+        layout.addWidget(steps)
+
+        self.analyze_all_button = QPushButton("Analyze All Tasks")
+        self.analyze_all_button.setEnabled(False)
+        self.analyze_all_button.setFixedHeight(52)
+        self.analyze_all_button.clicked.connect(self.analyze_all_tasks)
+        layout.addWidget(self.analyze_all_button)
+
+        self.generate_all_report_button = QPushButton("Generate Report (All Tasks)")
+        self.generate_all_report_button.setEnabled(False)
+        self.generate_all_report_button.setFixedHeight(52)
+        self.generate_all_report_button.clicked.connect(self.generate_report_all_tasks)
+        layout.addWidget(self.generate_all_report_button)
+
+        self.multi_task_text = QTextEdit()
+        self.multi_task_text.setReadOnly(True)
+        self.multi_task_text.setVisible(False)
+        self.multi_task_text.setPlaceholderText(
+            "Run 'Analyze All Tasks' after completing individual analyses to see combined insights."
+        )
+        layout.addWidget(self.multi_task_text)
+
+        layout.addStretch()
+
+    def _build_stage_header(self) -> None:
+        """Create a staged header so only the active workflow panel is presented."""
+        if getattr(self, '_stage_widget', None) is not None:
+            return
+
+        central = self.centralWidget()
+        if central is None:
+            return
+        layout = central.layout()
+        if layout is None:
+            return
+
+        # Stage order mirrors the original tabs
+        self._stage_order: List[Tuple[int, str]] = [
+            (self.connection_tab_index, "Connect"),
+            (self.analysis_tab_index, "Tasks"),
+            (self.multi_task_tab_index, "Multi-Task"),
+        ]
+        self._stage_states: Dict[int, str] = {idx: "ready" for idx, _ in self._stage_order}
+        self._stage_status_overrides: Dict[int, str] = {}
+        self._stage_labels: List[Dict[str, Any]] = []
+
+        stage_widget = QWidget()
+        stage_widget.setObjectName("StageHeader")
+        stage_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        stage_layout = QHBoxLayout(stage_widget)
+        stage_layout.setContentsMargins(0, 0, 0, 12)
+        stage_layout.setSpacing(12)
+
+        for idx, (tab_idx, label_text) in enumerate(self._stage_order):
+            card = QWidget()
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 10, 14, 10)
+            card_layout.setSpacing(4)
+
+            title_lbl = QLabel(label_text)
+            title_lbl.setStyleSheet("font-size:13px; font-weight:600; color:#1f2937;")
+            status_lbl = QLabel("In progress" if idx == 0 else "Ready")
+            status_lbl.setStyleSheet("font-size:11px; color:#6b7280;")
+
+            card_layout.addWidget(title_lbl)
+            card_layout.addWidget(status_lbl)
+            card_layout.addStretch()
+
+            stage_layout.addWidget(card)
+            self._stage_labels.append({
+                "card": card,
+                "title": title_lbl,
+                "status": status_lbl,
+            })
+
+        stage_layout.addStretch()
+
+        try:
+            battery_widget = self._build_battery_indicator()
+            stage_layout.addWidget(battery_widget, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        except Exception:
+            pass
+
+        # Insert the stage widget right beneath the main header label
+        layout.insertWidget(1, stage_widget)
+        self._stage_widget = stage_widget
+
+        # Initial state: connection active, others marked ready
+        self._stage_states[self.connection_tab_index] = "active"
+        self._refresh_stage_header()
+
+    def _refresh_stage_header(self) -> None:
+        if not hasattr(self, '_stage_labels'):
+            return
+
+        for (tab_idx, _), label_dict in zip(self._stage_order, self._stage_labels):
+            state = self._stage_states.get(tab_idx, "ready")
+            status_override = self._stage_status_overrides.get(tab_idx)
+            title_lbl = label_dict["title"]
+            status_lbl = label_dict["status"]
+            card_widget = label_dict["card"]
+
+            if state == "active":
+                status_lbl.setText(status_override or "In progress")
+                card_widget.setStyleSheet("background:#eff6ff; border:1px solid #3b82f6; border-radius:10px;")
+                title_lbl.setStyleSheet("font-size:13px; font-weight:600; color:#1d4ed8;")
+                status_lbl.setStyleSheet("font-size:11px; color:#1d4ed8;")
+            elif state == "done":
+                status_lbl.setText(status_override or "Complete")
+                card_widget.setStyleSheet("background:#ecfdf5; border:1px solid #34d399; border-radius:10px;")
+                title_lbl.setStyleSheet("font-size:13px; font-weight:600; color:#047857;")
+                status_lbl.setStyleSheet("font-size:11px; color:#047857;")
+            else:
+                status_lbl.setText(status_override or "Ready")
+                card_widget.setStyleSheet("background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px;")
+                title_lbl.setStyleSheet("font-size:13px; font-weight:600; color:#475569;")
+                status_lbl.setStyleSheet("font-size:11px; color:#64748b;")
+
+    def _set_stage(self, tab_index: int) -> None:
+        if not hasattr(self, '_stage_order'):
+            return
+        try:
+            order_index = next(i for i, (idx, _) in enumerate(self._stage_order) if idx == tab_index)
+        except StopIteration:
+            return
+
+        for pos, (idx, _) in enumerate(self._stage_order):
+            if pos < order_index:
+                self._stage_states[idx] = "done"
+            elif pos == order_index:
+                self._stage_states[idx] = "active"
+            else:
+                if self._stage_states.get(idx) != "done":
+                    self._stage_states[idx] = "ready"
+
+        try:
+            if self.tabs.currentIndex() != tab_index:
+                self.tabs.setCurrentIndex(tab_index)
+        except Exception:
+            pass
+
+        self._stage_status_overrides.pop(tab_index, None)
+        self._refresh_stage_header()
+
+    def _mark_stage_done(self, tab_index: int, status_text: Optional[str] = None) -> None:
+        if not hasattr(self, '_stage_order'):
+            return
+        if tab_index not in dict(self._stage_order):
+            return
+        self._stage_states[tab_index] = "done"
+        if status_text is not None:
+            self._stage_status_overrides[tab_index] = status_text
+        self._refresh_stage_header()
+
+    def _reset_workflow_progress(self):
+        super()._reset_workflow_progress()
+        if not hasattr(self, '_stage_states'):
+            return
+        for idx in list(self._stage_states.keys()):
+            self._stage_states[idx] = "ready"
+        self._stage_status_overrides.clear()
+        self._set_stage(self.connection_tab_index)
+
+    def handle_proceed_to_analysis(self):
+        super().handle_proceed_to_analysis()
+        self._set_stage(self.analysis_tab_index)
+
+    def update_results_display(self, results):
+        """Extend base summary handling with enhanced multi-task gating."""
+        super().update_results_display(results)
+        self._set_stage(self.multi_task_tab_index)
+        try:
+            if getattr(self, "analyze_all_button", None):
+                self.analyze_all_button.setEnabled(True)
+            if getattr(self, "generate_all_report_button", None):
+                # Enable after combined analysis runs
+                self.generate_all_report_button.setEnabled(False)
+            if getattr(self, "multi_task_text", None):
+                self.multi_task_text.setVisible(True)
+                self.multi_task_text.setPlainText(
+                    "Press 'Analyze All Tasks' to compute combined insights across completed sessions."
+                )
+        except Exception:
+            pass
+
     def _apply_modern_ui(self):
-        """Apply a cohesive modern dark theme + typography for commercial polish."""
+        """Apply a clean, modern white-background design for commercial-grade UX."""
         app = QtWidgets.QApplication.instance()
         if app is None:
             return
@@ -1982,91 +3681,363 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             app.setStyle('Fusion')
         except Exception:
             pass
-        # High DPI scaling (idempotent)
+        
+        # High DPI scaling
         try:
             QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
         except Exception:
             pass
-        # Palette (dark with accent)
-        accent = QColor(42,130,218)  # Azure-ish
+        
+        # Modern white palette with professional accents
         pal = QPalette()
-        bg = QColor(18,20,22)
-        bg_alt = QColor(30,33,36)
-        text = QColor(230,232,235)
-        disabled_text = QColor(120,125,130)
-        pal.setColor(QPalette.Window, bg)
-        pal.setColor(QPalette.Base, QColor(24,26,29))
-        pal.setColor(QPalette.AlternateBase, bg_alt)
-        pal.setColor(QPalette.WindowText, text)
-        pal.setColor(QPalette.Text, text)
-        pal.setColor(QPalette.Button, QColor(40,44,48))
-        pal.setColor(QPalette.ButtonText, text)
-        pal.setColor(QPalette.Highlight, accent)
-        pal.setColor(QPalette.HighlightedText, QColor(255,255,255))
-        pal.setColor(QPalette.Disabled, QPalette.ButtonText, disabled_text)
-        pal.setColor(QPalette.Disabled, QPalette.WindowText, disabled_text)
-        pal.setColor(QPalette.Disabled, QPalette.Text, disabled_text)
+        white = QColor(255, 255, 255)
+        off_white = QColor(250, 250, 250)
+        light_gray = QColor(240, 240, 240)
+        border_gray = QColor(220, 220, 220)
+        text_dark = QColor(33, 33, 33)
+        text_gray = QColor(117, 117, 117)
+        accent_blue = QColor(0, 120, 212)  # Modern blue accent
+        hover_blue = QColor(16, 137, 234)
+        
+        pal.setColor(QPalette.Window, white)
+        pal.setColor(QPalette.Base, white)
+        pal.setColor(QPalette.AlternateBase, off_white)
+        pal.setColor(QPalette.WindowText, text_dark)
+        pal.setColor(QPalette.Text, text_dark)
+        pal.setColor(QPalette.Button, light_gray)
+        pal.setColor(QPalette.ButtonText, text_dark)
+        pal.setColor(QPalette.Highlight, accent_blue)
+        pal.setColor(QPalette.HighlightedText, white)
+        pal.setColor(QPalette.Disabled, QPalette.ButtonText, text_gray)
+        pal.setColor(QPalette.Disabled, QPalette.WindowText, text_gray)
+        pal.setColor(QPalette.Disabled, QPalette.Text, text_gray)
+        
         try:
             app.setPalette(pal)
         except Exception:
             pass
-        # Font
+        
+        # Modern font
         try:
-            base_font = QFont('Segoe UI', 10)
+            target_os = getattr(self, '_normalized_os', '')
+            font_family = 'Segoe UI'
+            font_size = 10
+            if 'mac' in target_os:
+                font_family = 'SF Pro Text'
+                font_size = 11
+            elif 'linux' in target_os:
+                font_family = 'Noto Sans'
+            base_font = QFont(font_family, font_size)
             app.setFont(base_font)
         except Exception:
             pass
-        # Stylesheet
+        
+        # Clean modern stylesheet with white background
         qss = """
-        QMainWindow { background: #121416; }
-        QStatusBar { background:#121416; color:#cfd2d6; border-top:1px solid #2c3136; }
-        QToolBar { background:#181a1d; border-bottom:1px solid #2c3136; spacing:4px; }
-        QToolButton { background:transparent; border:0; padding:6px 10px; border-radius:6px; }
-        QToolButton:hover { background:#23272b; }
-        QToolButton:pressed { background:#2a82da; }
-        QPushButton { background:#2a82da; color:white; border:0; padding:6px 14px; border-radius:6px; font-weight:600; }
-        QPushButton:hover { background:#3793ef; }
-        QPushButton:pressed { background:#1f6cb5; }
-        QPushButton:disabled { background:#2f353a; color:#7d848b; }
-        QGroupBox { border:1px solid #2c3136; border-radius:8px; margin-top:14px; padding:10px 12px 12px 12px; font-weight:600; }
-        QGroupBox::title { subcontrol-origin: margin; left:10px; top:-4px; padding:0 6px; background:#121416; }
-        QTabWidget::pane { border:1px solid #2c3136; border-radius:8px; top:-1px; background:#181a1d; }
-        QTabBar::tab { background:#181a1d; padding:6px 16px; border-top-left-radius:6px; border-top-right-radius:6px; margin-right:4px; color:#cfd2d6; }
-        QTabBar::tab:selected { background:#2a82da; color:white; }
-        QTabBar::tab:hover { background:#23272b; }
-        QLabel#ActionBanner { font-size:22px; font-weight:700; padding:8px 14px; border-radius:10px; }
-        QTextEdit, QPlainTextEdit { background:#181a1d; border:1px solid #2c3136; border-radius:6px; selection-background-color:#2a82da; selection-color:white; }
-        QComboBox { background:#181a1d; padding:4px 8px; border:1px solid #2c3136; border-radius:6px; }
-        QComboBox:hover { border:1px solid #3a4046; }
-        QComboBox::drop-down { width:24px; background:#181a1d; border-left:1px solid #2c3136; }
-        QListView { background:#181a1d; border:1px solid #2c3136; }
-        QLineEdit { background:#181a1d; border:1px solid #2c3136; border-radius:6px; padding:4px 6px; }
-        QProgressBar { border:1px solid #2c3136; border-radius:6px; text-align:center; background:#181a1d; }
-        QProgressBar::chunk { background:#2a82da; border-radius:6px; }
-        QScrollBar:vertical { background:#1e2124; width:12px; margin:0; border:none; }
-        QScrollBar::handle:vertical { background:#2f343a; min-height:24px; border-radius:6px; }
-        QScrollBar::handle:vertical:hover { background:#3d4249; }
-        QScrollBar:horizontal { background:#1e2124; height:12px; margin:0; border:none; }
-        QScrollBar::handle:horizontal { background:#2f343a; min-width:24px; border-radius:6px; }
-        QScrollBar::handle:horizontal:hover { background:#3d4249; }
-        QToolTip { background:#2a82da; color:white; border:0; padding:6px; }
+        QMainWindow { 
+            background: #ffffff; 
+        }
+        QStatusBar { 
+            background: #fafafa; 
+            color: #333333; 
+            border-top: 1px solid #dcdcdc; 
+            padding: 4px;
+        }
+        QToolBar { 
+            background: #ffffff; 
+            border-bottom: 1px solid #e0e0e0; 
+            spacing: 8px; 
+            padding: 4px 8px;
+        }
+        QToolButton { 
+            background: transparent; 
+            border: 0; 
+            padding: 8px 12px; 
+            border-radius: 6px;
+            color: #333333;
+        }
+        QToolButton:hover { 
+            background: #f0f0f0; 
+        }
+        QToolButton:pressed { 
+            background: #e0e0e0; 
+        }
+        QPushButton { 
+            background: #0078d4; 
+            color: white; 
+            border: 0; 
+            padding: 8px 20px; 
+            border-radius: 6px; 
+            font-weight: 600;
+            font-size: 11px;
+        }
+        QPushButton:hover { 
+            background: #1089e8; 
+        }
+        QPushButton:pressed { 
+            background: #006cbe; 
+        }
+        QPushButton:disabled { 
+            background: #f0f0f0; 
+            color: #999999; 
+        }
+        QPushButton#secondary { 
+            background: #ffffff; 
+            color: #333333; 
+            border: 1px solid #dcdcdc;
+        }
+        QPushButton#secondary:hover { 
+            background: #f5f5f5; 
+            border: 1px solid #c0c0c0;
+        }
+        QPushButton#danger {
+            background: #d13438;
+        }
+        QPushButton#danger:hover {
+            background: #e13438;
+        }
+        QGroupBox { 
+            border: 1px solid #e0e0e0; 
+            border-radius: 8px; 
+            margin-top: 16px; 
+            padding: 16px 12px 12px 12px; 
+            font-weight: 600;
+            color: #333333;
+            background: #ffffff;
+        }
+        QGroupBox::title { 
+            subcontrol-origin: margin; 
+            left: 12px; 
+            top: -8px; 
+            padding: 0 8px; 
+            background: #ffffff;
+            color: #333333;
+        }
+        QTabWidget::pane { 
+            border: 1px solid #e0e0e0; 
+            border-radius: 8px; 
+            top: -1px; 
+            background: #ffffff;
+        }
+        QTabBar::tab { 
+            background: #fafafa; 
+            padding: 10px 20px; 
+            border-top-left-radius: 6px; 
+            border-top-right-radius: 6px; 
+            margin-right: 4px; 
+            color: #757575;
+            border: 1px solid #e0e0e0;
+            border-bottom: 0;
+        }
+        QTabBar::tab:selected { 
+            background: #ffffff; 
+            color: #0078d4;
+            font-weight: 600;
+            border-bottom: 2px solid #0078d4;
+        }
+        QTabBar::tab:hover { 
+            background: #f5f5f5; 
+        }
+        QLabel#SectionHeader { 
+            font-size: 16px; 
+            font-weight: 700; 
+            color: #333333;
+            padding: 8px 0;
+        }
+        QLabel#MetricValue {
+            font-size: 24px;
+            font-weight: 700;
+            color: #0078d4;
+        }
+        QLabel#StatusLabel {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        QLabel#StatusSuccess {
+            background: #f3f9f1;
+            color: #107c10;
+            border: 1px solid #bad5ba;
+        }
+        QLabel#StatusWarning {
+            background: #fff9f5;
+            color: #c27500;
+            border: 1px solid #fbd7b4;
+        }
+        QTextEdit, QPlainTextEdit { 
+            background: #fafafa; 
+            border: 1px solid #e0e0e0; 
+            border-radius: 6px; 
+            selection-background-color: #0078d4; 
+            selection-color: white;
+            padding: 8px;
+            color: #333333;
+        }
+        QComboBox { 
+            background: #ffffff; 
+            padding: 6px 36px 6px 12px; 
+            border: 1px solid #dcdcdc; 
+            border-radius: 6px;
+            color: #333333;
+        }
+        QComboBox:hover { 
+            border: 1px solid #0078d4; 
+        }
+        QComboBox::drop-down { 
+            width: 32px; 
+            background: #f2f4f7; 
+            border-left: 1px solid #dcdcdc; 
+            border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px;
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+        }
+        QComboBox::down-arrow {
+            image: url(:/qt-project.org/styles/commonstyle/images/down-16.png);
+            width: 12px;
+            height: 12px;
+            margin-right: 10px;
+        }
+        QComboBox::down-arrow:on {
+            image: url(:/qt-project.org/styles/commonstyle/images/down-16.png);
+            margin-top: 1px;
+        }
+        QComboBox::down-arrow:disabled {
+            image: url(:/qt-project.org/styles/commonstyle/images/down-16.png);
+        }
+        QListView { 
+            background: #ffffff; 
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+        }
+        QLineEdit { 
+            background: #ffffff; 
+            border: 1px solid #dcdcdc; 
+            border-radius: 6px; 
+            padding: 6px 12px;
+            color: #333333;
+        }
+        QLineEdit:focus {
+            border: 1px solid #0078d4;
+        }
+        QProgressBar { 
+            border: 1px solid #e0e0e0; 
+            border-radius: 6px; 
+            text-align: center; 
+            background: #fafafa;
+            color: #333333;
+        }
+        QProgressBar::chunk { 
+            background: #0078d4; 
+            border-radius: 6px; 
+        }
+        QScrollBar:vertical { 
+            background: #fafafa; 
+            width: 12px; 
+            margin: 0; 
+            border: none; 
+        }
+        QScrollBar::handle:vertical { 
+            background: #c0c0c0; 
+            min-height: 24px; 
+            border-radius: 6px; 
+        }
+        QScrollBar::handle:vertical:hover { 
+            background: #a0a0a0; 
+        }
+        QScrollBar:horizontal { 
+            background: #fafafa; 
+            height: 12px; 
+            margin: 0; 
+            border: none; 
+        }
+        QScrollBar::handle:horizontal { 
+            background: #c0c0c0; 
+            min-width: 24px; 
+            border-radius: 6px; 
+        }
+        QScrollBar::handle:horizontal:hover { 
+            background: #a0a0a0; 
+        }
+        QToolTip { 
+            background: #333333; 
+            color: white; 
+            border: 0; 
+            padding: 6px 10px;
+            border-radius: 4px;
+        }
         """
         try:
             app.setStyleSheet(qss)
         except Exception:
             pass
-        # Optional status bar message
+        
+        # Remove window menu bar buttons (keep only essential tabs)
+        try:
+            self.menuBar().clear()
+        except Exception:
+            pass
+        
+        # Update window title
+        try:
+            self.setWindowTitle("MindLink Analyzer")
+        except Exception:
+            pass
+        
+        # Status message
         try:
             if self.statusBar():
-                self.statusBar().showMessage("Ready • Modern UI active", 5000)
+                self.statusBar().showMessage("Ready • Modern UI Active", 3000)
         except Exception:
             pass
 
     def _create_toolbar(self):
-        """Create a primary action toolbar mapping to existing buttons for a cleaner UX."""
-        tb = QtWidgets.QToolBar("Main")
+        """Create a minimal, clean toolbar with only essential actions."""
+        # Remove existing toolbars first
+        try:
+            for toolbar in self.findChildren(QtWidgets.QToolBar):
+                self.removeToolBar(toolbar)
+        except Exception:
+            pass
+        
+        # Create main toolbar
+        tb = QtWidgets.QToolBar("Main Actions")
         tb.setObjectName("MainToolbar")
         tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setIconSize(QtCore.QSize(20, 20))
+        
+        # Connection status indicator
+        self.connection_status_label = QLabel("● Disconnected")
+        self.connection_status_label.setStyleSheet("color: #d13438; font-weight: 600; padding: 4px 12px;")
+        tb.addWidget(self.connection_status_label)
+        
+        tb.addSeparator()
+        
+        # Quick access to key functions
+        connect_action = QtWidgets.QAction("Connect Device", self)
+        connect_action.triggered.connect(self.on_connect_clicked)
+        tb.addAction(connect_action)
+        
+        tb.addSeparator()
+        
+        # Protocol selector
+        protocol_label = QLabel("Protocol:")
+        protocol_label.setStyleSheet("padding: 0 8px; color: #757575; font-size: 10px;")
+        tb.addWidget(protocol_label)
+        
+        # Add protocol combo if it exists
+        try:
+            if hasattr(self, 'protocol_combo'):
+                tb.addWidget(self.protocol_combo)
+        except Exception:
+            pass
+        
+        # Add spacer to push items to the right
+        spacer = QtWidgets.QWidget()
+        spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        
         self.addToolBar(QtCore.Qt.TopToolBarArea, tb)
         def _act(text, slot, icon_name=None, tip=None):
             act = QtGui.QAction(text, self)
@@ -2088,7 +4059,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             return act
         # Map to existing slots where possible
         if hasattr(self, 'on_connect_clicked'):
-            _act('Connect', self.on_connect_clicked, 'connect.png', 'Connect & Login')
+            _act('Connect', self.on_connect_clicked, 'connect.png', 'Connect')
         if hasattr(self, 'start_calibration_button') and hasattr(self, 'start_calibration'):
             # Provide generic start baseline action if button exists
             _act('Baseline', lambda: self.start_calibration('eyes_closed'), 'baseline.png', 'Start Eyes-Closed Baseline')
@@ -2107,9 +4078,160 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             tb.addWidget(spacer)
         except Exception:
             pass
+        try:
+            tb.addWidget(self._build_battery_indicator())
+        except Exception:
+            pass
+
+        help_action = QtWidgets.QAction("Help", self)
+        help_action.triggered.connect(lambda: QtWidgets.QMessageBox.information(
+            self, "Help", "BrainLink Analyzer Professional\n\nConnect your device and follow the protocol steps."
+        ))
+        tb.addAction(help_action)
         # Protocol change action
         if hasattr(self, '_change_protocol_dialog'):
             _act('Protocol', self._change_protocol_dialog, 'protocol.png', 'Change protocol set')
+
+
+    def setup_analysis_tab(self):
+        """Rebuild analysis layout with task controls beside calibration buttons."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(18)
+
+        cal_group = QtWidgets.QGroupBox()
+        cal_group_layout = QtWidgets.QVBoxLayout()
+        cal_group_layout.setContentsMargins(18, 16, 18, 16)
+        cal_group_layout.setSpacing(14)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(16)
+
+        baseline_col = QtWidgets.QVBoxLayout()
+        baseline_col.setSpacing(10)
+
+        eyes_closed_row = QtWidgets.QHBoxLayout()
+        eyes_closed_row.setSpacing(8)
+        self.eyes_closed_button = QtWidgets.QPushButton("Start Eyes Closed")
+        self.eyes_closed_button.setFixedWidth(180)
+        self.eyes_closed_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.eyes_closed_button.clicked.connect(lambda: self.start_calibration('eyes_closed'))
+        self.eyes_closed_button.setEnabled(False)
+        eyes_closed_row.addWidget(self.eyes_closed_button)
+        self.eyes_closed_label = QtWidgets.QLabel("Status: Not started")
+        eyes_closed_row.addWidget(self.eyes_closed_label)
+        eyes_closed_row.addStretch()
+        baseline_col.addLayout(eyes_closed_row)
+
+        eyes_open_row = QtWidgets.QHBoxLayout()
+        eyes_open_row.setSpacing(8)
+        self.eyes_open_button = QtWidgets.QPushButton("Start Eyes Open")
+        self.eyes_open_button.setFixedWidth(180)
+        self.eyes_open_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.eyes_open_button.clicked.connect(lambda: self.start_calibration('eyes_open'))
+        self.eyes_open_button.setEnabled(False)
+        eyes_open_row.addWidget(self.eyes_open_button)
+        self.eyes_open_label = QtWidgets.QLabel("Status: Not started")
+        eyes_open_row.addWidget(self.eyes_open_label)
+        eyes_open_row.addStretch()
+        baseline_col.addLayout(eyes_open_row)
+
+        task_row = QtWidgets.QHBoxLayout()
+        task_row.setSpacing(12)
+        task_label = QtWidgets.QLabel("Task:")
+        task_row.addWidget(task_label)
+        self.task_combo = QtWidgets.QComboBox()
+        self.task_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        try:
+            available_tasks = list(getattr(BL, 'AVAILABLE_TASKS', {}).keys())
+        except Exception:
+            available_tasks = []
+        if available_tasks:
+            self.task_combo.addItems(available_tasks)
+        self.task_combo.currentTextChanged.connect(self.update_task_preview)
+        task_row.addWidget(self.task_combo)
+        self.task_button = QtWidgets.QPushButton("Start Task")
+        self.task_button.setEnabled(False)
+        self.task_button.clicked.connect(self.start_task)
+        task_row.addWidget(self.task_button)
+        task_row.addStretch()
+        baseline_col.addLayout(task_row)
+
+        top_row.addLayout(baseline_col, 3)
+
+        actions_container = QtWidgets.QWidget()
+        actions_container.setFixedWidth(220)
+        actions_container.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+        actions_col = QtWidgets.QVBoxLayout(actions_container)
+        actions_col.setContentsMargins(0, 0, 0, 0)
+        actions_col.setSpacing(10)
+        self.task_label = QtWidgets.QLabel("Status: Not started")
+        self.task_label.setAlignment(Qt.AlignLeft)
+        self.task_label.setStyleSheet(
+            "padding:6px 12px; border-radius:10px; background:#eef2ff; color:#1e3a8a; font-weight:600;"
+        )
+        actions_col.addWidget(self.task_label)
+
+        self.stop_button = QtWidgets.QPushButton("Stop Current Phase")
+        self.stop_button.setObjectName("secondary")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_calibration)
+        actions_col.addWidget(self.stop_button)
+
+        self.change_protocol_button = QtWidgets.QPushButton("Change Protocol")
+        self.change_protocol_button.setObjectName("secondary")
+        self.change_protocol_button.setToolTip(
+            "Switch protocol group (cognitive tasks always retained). Disabled during an active task phase."
+        )
+        self.change_protocol_button.clicked.connect(self._change_protocol_dialog)  # type: ignore
+        actions_col.addWidget(self.change_protocol_button)
+        actions_col.addStretch()
+
+        top_row.addWidget(actions_container, 0)
+
+        cal_group_layout.addLayout(top_row)
+
+        self.task_preview = QtWidgets.QTextEdit()
+        self.task_preview.setReadOnly(True)
+        self.task_preview.setMinimumHeight(320)
+        self.task_preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.task_preview.setStyleSheet(
+            "background-color:#f8fbff; border:1px solid #dbeafe; border-radius:12px;"
+        )
+        self.task_preview.setPlaceholderText("Select a task to view detailed instructions.")
+        cal_group_layout.addWidget(self.task_preview)
+
+        cal_group.setLayout(cal_group_layout)
+        layout.addWidget(cal_group)
+
+        status_row = QtWidgets.QHBoxLayout()
+        status_row.setSpacing(10)
+        status_title = QtWidgets.QLabel("Feature Pipeline:")
+        status_title.setStyleSheet("font-weight:600; color:#4b5563;")
+        status_row.addWidget(status_title)
+        self.feature_status_label = QtWidgets.QLabel("Idle")
+        self.feature_status_label.setStyleSheet(
+            "padding:6px 14px; border-radius:999px; background:#f1f5f9; color:#475569; font-weight:600;"
+        )
+        status_row.addWidget(self.feature_status_label)
+        status_row.addStretch()
+        layout.addLayout(status_row)
+
+        self.live_feature_hint = QtWidgets.QLabel("Awaiting live EEG features…")
+        self.live_feature_hint.setStyleSheet("color:#64748b; font-size:11px; margin-left:4px;")
+        layout.addWidget(self.live_feature_hint)
+
+        layout.addStretch()
+
+        # Hidden legacy widget retained for compatibility with single-task analysis hooks
+    # Legacy summary sink retained for downstream calls; keep hidden and size zero
+        self.analysis_summary = QtWidgets.QTextEdit(tab)
+        self.analysis_summary.setReadOnly(True)
+        self.analysis_summary.setMaximumSize(0, 0)
+        self.analysis_summary.hide()
+        self.analysis_summary.setPlaceholderText("Task insights will appear here once analysis completes.")
+
+        self.analysis_tab_index = self.tabs.addTab(tab, "Analysis")
 
 
     def generate_report_all_tasks(self):
@@ -2126,9 +4248,9 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             return
         
         lines = []
-        
-        # Helper function for safe formatting
-        def _fmt(v, none="-"):
+
+        # Helper function for safe formatting with improved placeholders
+        def _fmt(v, none="NA"):
             if v is None:
                 return none
             if isinstance(v, float):
@@ -2136,9 +4258,8 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     return none
                 return f"{v:.6g}"
             return str(v)
-        
         # Header
-        lines.append("BrainLink Enhanced Multi-Task Analysis Report")
+        lines.append("MindLink Enhanced Multi-Task Analysis Report")
         lines.append("=" * 72)
         try:
             from datetime import datetime, UTC
@@ -2169,18 +4290,64 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             sum_p = summary.get("sum_p", {})
             comp = summary.get("composite", {}) or {}
             effect_mean = summary.get("effect_size_mean")
+            decision_info = summary.get("feature_selection") or {}
             
             lines.append(f"[{tname}]")
+            
+            # KM correlation details (Task F)
+            km_mean_r = fisher.get('km_mean_r')
+            k_features = fisher.get('k_features')
+            km_df_ratio = fisher.get('km_df_ratio')
+            if km_mean_r is not None and k_features:
+                lines.append(f"  KM correlation: k={k_features}, mean_offdiag_r={_fmt(km_mean_r)}, df_KM/(2k)={_fmt(km_df_ratio)}")
+            
             lines.append(f"  Fisher_KM_p={_fmt(fisher.get('km_p'))} sig={fisher.get('significant')} df={_fmt(fisher.get('km_df'))}")
+            
+            # ESS display (Task G)
+            perm_meta = sum_p.get('metadata', {})
+            ess_baseline = perm_meta.get('ess_baseline')
+            ess_task = perm_meta.get('ess_task')
+            n_blocks_used = perm_meta.get('n_blocks_used')
+            if ess_baseline is not None or ess_task is not None or n_blocks_used is not None:
+                lines.append(f"  ESS: baseline={_fmt(ess_baseline)}, task={_fmt(ess_task)}, n_blocks={_fmt(n_blocks_used)}")
+            
             lines.append(f"  SumP={_fmt(sum_p.get('value'))} p={_fmt(sum_p.get('perm_p'))} sig={sum_p.get('significant')} perm={sum_p.get('permutation_used')}")
+            
+            # Consistency banner (Task G): if Fisher_KM~0 but SumP missing
+            fisher_p = fisher.get('km_p')
+            sump_p = sum_p.get('perm_p')
+            if fisher_p is not None and fisher_p > 0.10 and (sump_p is None or sump_p == 0.0):
+                lines.append("  ⚠ Consistency note: Fisher_KM~null but SumP not computed or zero")
+            
             lines.append(f"  CompositeScore={_fmt(comp.get('score'))} Mean|d|={_fmt(effect_mean)}")
+            if decision_info:
+                lines.append(
+                    "  Decision thresholds (band-specific): "
+                    f"p≤{_fmt(decision_info.get('alpha'))}, "
+                    f"q≤{_fmt(decision_info.get('fdr_alpha'))}"
+                )
+                lines.append(
+                    "    Effect sizes: α≥0.25, β≥0.35, γ≥0.30, θ≥0.30, ratios≥0.30"
+                )
+                lines.append(
+                    "    Percent change: relative features≥5%, absolute≥10%"
+                )
+                if decision_info.get('correlation_guard_active'):
+                    lines.append(
+                        f"  Correlation guard factor={_fmt(decision_info.get('correlation_guard_factor'))} "
+                        f"(m_eff={_fmt(decision_info.get('effective_feature_count'))}/{decision_info.get('nominal_feature_count')})"
+                    )
             
             # Per-feature detail
             analysis = tinfo.get("analysis", {}) or {}
             if analysis:
-                # Build list with significance flag
+                # Build list with significance flag, filtering out gamma features not evaluated
                 feat_rows = []
                 for fname, data in analysis.items():
+                    # Skip gamma features that were guarded out (gamma_evaluated=False)
+                    if fname.startswith('gamma_') and not data.get('gamma_evaluated', True):
+                        continue
+                    
                     p = data.get("p_value")
                     q = data.get("q_value")
                     delta = data.get("delta")
@@ -2188,7 +4355,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     task_mean = data.get("task_mean")
                     base_mean = data.get("baseline_mean")
                     disc = data.get("discrete_index")
-                    sig = (p is not None) and (p < self.feature_engine.config.alpha)
+                    sig = bool(data.get("significant_change"))
                     feat_rows.append((p if p is not None else 1.0, fname, {
                         "p": p, "q": q, "delta": delta, "d": eff_d,
                         "task_mean": task_mean, "baseline_mean": base_mean,
@@ -2197,28 +4364,77 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 feat_rows.sort(key=lambda r: r[0])
                 sig_rows = [r for r in feat_rows if r[2]["sig"]]
                 
-                lines.append("  Significant Features (p < alpha, top 5 shown):")
+                lines.append("  Significant Features (adjusted thresholds, top 5 shown):")
                 if not sig_rows:
                     lines.append("    (none)")
                 else:
-                    # Show only top 5 significant features
                     for p, fname, d in sig_rows[:5]:
                         lines.append(
-                            f"    {fname}: p={_fmt(d['p'])} Δ={_fmt(d['delta'])} d={_fmt(d['d'])} "
+                            f"    {fname}: p={_fmt(d['p'])} q={_fmt(d.get('q'))} Δ={_fmt(d['delta'])} d={_fmt(d['d'])} "
                             f"task_mean={_fmt(d['task_mean'])} base_mean={_fmt(d['baseline_mean'])} bin={d['disc']}"
                         )
-                    # Show count if there are more
-                    if len(sig_rows) > 5:
-                        lines.append(f"    ... and {len(sig_rows) - 5} more significant features")
                 
                 # Always include top-5 table (by p-value)
                 lines.append("  Top 5 Features (by p-value):")
                 for p, fname, d in feat_rows[:5]:
                     ratio = (d['task_mean']/(abs(d['baseline_mean'])+1e-12)) if (d['task_mean'] is not None and d['baseline_mean']) else None
                     lines.append(
-                        f"    {fname}: p={_fmt(d['p'])} sig={d['sig']} Δ={_fmt(d['delta'])} d={_fmt(d['d'])} "
+                        f"    {fname}: p={_fmt(d['p'])} q={_fmt(d.get('q'))} sig={d['sig']} Δ={_fmt(d['delta'])} d={_fmt(d['d'])} "
                         f"ratio={_fmt(ratio)}"
                     )
+            
+            # Expectation-alignment analysis (production display)
+            exp_result = summary.get('expectation')
+            if exp_result:
+                lines.append("  ⎯⎯⎯ Expectation-Alignment Analysis ⎯⎯⎯")
+                grade = exp_result.get('grade', 'N/A')
+                passes = exp_result.get('passes', [])
+                drivers = exp_result.get('top_drivers', [])
+                counter = exp_result.get('counter_directional', False)
+                notes = exp_result.get('notes', [])
+                insufficient = exp_result.get('insufficient_metrics', False)
+                
+                lines.append(f"  Grade: {grade}")
+                if insufficient:
+                    lines.append("  ⚠ Insufficient metrics for full evaluation (missing d or p_dir on key features)")
+                if counter:
+                    lines.append("  ⚠ Counter-directional: ≥70% of features moved opposite to task expectations")
+                
+                lines.append(f"  Passed Features (n={len(passes)}):")
+                if not passes:
+                    lines.append("    (none)")
+                else:
+                    for pf in passes:
+                        feat_name = pf.get('feature', 'unknown')
+                        direction = pf.get('direction', '?')
+                        p_dir = pf.get('p_dir')
+                        d_val = pf.get('d')
+                        pct_val = pf.get('pct')
+                        rule = pf.get('rule', 'unknown')
+                        d_meets = pf.get('d_meets_thr', False)
+                        pct_meets = pf.get('pct_meets_thr', False)
+                        
+                        criteria_str = []
+                        if d_meets:
+                            criteria_str.append(f"d={_fmt(d_val)}")
+                        if pct_meets:
+                            criteria_str.append(f"Δ%={_fmt(pct_val)}")
+                        criteria_str.append(f"p_dir={_fmt(p_dir)}")
+                        
+                        lines.append(f"    {feat_name} ({direction}): {', '.join(criteria_str)} | rule={rule}")
+                
+                lines.append("  Top Drivers (by |d|):")
+                if not drivers:
+                    lines.append("    (none)")
+                else:
+                    for drv in drivers:
+                        lines.append(f"    {drv.get('feature', 'unknown')}: |d|={_fmt(drv.get('d'))}")
+                
+                if notes:
+                    lines.append("  Notes:")
+                    for note in notes:
+                        lines.append(f"    • {note}")
+            
             lines.append("")
         
         # Combined aggregate
@@ -2226,13 +4442,32 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         lines.append("-" * 30)
         combined = res.get('combined', {})
         comb_summary = combined.get("summary", {})
+        combined_analysis = combined.get("analysis", {}) or {}
         fisher_c = comb_summary.get("fisher", {})
         sum_p_c = comb_summary.get("sum_p", {})
         comp_c = comb_summary.get("composite", {}) or {}
         effect_c = comb_summary.get("effect_size_mean")
+        decision_c = comb_summary.get("feature_selection") or {}
         lines.append(f"Fisher_KM_p={_fmt(fisher_c.get('km_p'))} sig={fisher_c.get('significant')} df={_fmt(fisher_c.get('km_df'))}")
         lines.append(f"SumP={_fmt(sum_p_c.get('value'))} p={_fmt(sum_p_c.get('perm_p'))} sig={sum_p_c.get('significant')} perm={sum_p_c.get('permutation_used')}")
         lines.append(f"CompositeScore={_fmt(comp_c.get('score'))} Mean|d|={_fmt(effect_c)}")
+        if decision_c:
+            lines.append(
+                "Decision thresholds (band-specific): "
+                f"p≤{_fmt(decision_c.get('alpha'))}, "
+                f"q≤{_fmt(decision_c.get('fdr_alpha'))}"
+            )
+            lines.append(
+                "  Effect sizes: α≥0.25, β≥0.35, γ≥0.30, θ≥0.30, ratios≥0.30"
+            )
+            lines.append(
+                "  Percent change: relative features≥5%, absolute≥10%"
+            )
+            if decision_c.get('correlation_guard_active'):
+                lines.append(
+                    f"Correlation guard factor={_fmt(decision_c.get('correlation_guard_factor'))} "
+                    f"(m_eff={_fmt(decision_c.get('effective_feature_count'))}/{decision_c.get('nominal_feature_count')})"
+                )
         lines.append("")
         
         # Across-task omnibus
@@ -2240,22 +4475,43 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         lines.append("-" * 40)
         across = res.get('across_task') or {}
         if across:
-            feat_info = across.get("features", {}) or {}
-            sig_feats = [f for f, d in feat_info.items() if d.get("omnibus_sig")]
-            lines.append(f"Features tested: {len(feat_info)} | Significant (FDR {self.feature_engine.config.fdr_alpha}): {len(sig_feats)}")
-            if sig_feats:
-                lines.append("Significant features: " + ", ".join(sorted(sig_feats)))
-            # Show top 5 by omnibus statistic
-            scored = []
-            for fname, data in feat_info.items():
-                stat = data.get("omnibus_stat")
-                pval = data.get("omnibus_p")
-                qval = data.get("omnibus_q")
-                scored.append((stat if stat is not None else -float('inf'), fname, pval, qval))
-            scored.sort(reverse=True)
-            lines.append("Top Feature Omnibus Stats (up to 5):")
-            for stat, fname, pval, qval in scored[:5]:
-                lines.append(f"  {fname}: stat={_fmt(stat)} p={_fmt(pval)} q={_fmt(qval)}")
+            # Check for ranking-only mode (Nmin guard)
+            ranking_only = across.get('ranking_only', False)
+            nmin = across.get('nmin_sessions')
+            sessions_used = across.get('sessions_used')
+            msg = across.get('message')
+            
+            if ranking_only:
+                lines.append(f"⚠ Significance testing disabled: N={sessions_used} sessions < Nmin={nmin}")
+                lines.append("Showing descriptive rankings only (median effect per task).")
+                if msg:
+                    lines.append(f"Note: {msg}")
+                # Show ranking-only features
+                feat_info = across.get("features", {}) or {}
+                lines.append(f"Features ranked: {len(feat_info)}")
+                # Show a few examples
+                lines.append("Sample feature rankings (up to 5):")
+                for i, (fname, data) in enumerate(sorted(feat_info.items())[:5]):
+                    ranking = data.get('ranking', [])
+                    ranking_str = " > ".join([f"{r['task']}({_fmt(r['median_effect'])})" for r in ranking])
+                    lines.append(f"  {fname}: {ranking_str}")
+            else:
+                feat_info = across.get("features", {}) or {}
+                sig_feats = [f for f, d in feat_info.items() if d.get("omnibus_sig")]
+                lines.append(f"Features tested: {len(feat_info)} | Significant (FDR {self.feature_engine.config.fdr_alpha}): {len(sig_feats)}")
+                if sig_feats:
+                    lines.append("Significant features: " + ", ".join(sorted(sig_feats)))
+                # Show top 5 by omnibus statistic
+                scored = []
+                for fname, data in feat_info.items():
+                    stat = data.get("omnibus_stat")
+                    pval = data.get("omnibus_p")
+                    qval = data.get("omnibus_q")
+                    scored.append((stat if stat is not None else -float('inf'), fname, pval, qval))
+                scored.sort(reverse=True)
+                lines.append("Top Feature Omnibus Stats (up to 5):")
+                for stat, fname, pval, qval in scored[:5]:
+                    lines.append(f"  {fname}: stat={_fmt(stat)} p={_fmt(pval)} q={_fmt(qval)}")
         else:
             lines.append("Across-task analysis unavailable (insufficient task diversity).")
         lines.append("")
@@ -2268,6 +4524,35 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         lines.append(f"Permutation preset={config.runtime_preset} (n_perm={config.n_perm}) | effect_measure={config.effect_measure}")
         lines.append(f"Discretization bins={config.discretization_bins} | FDR alpha={config.fdr_alpha}")
         lines.append("Baseline: eyes-closed only (eyes-open retained for reference, not pooled).")
+        lines.append("")
+        lines.append("Glossary of Metrics")
+        lines.append("-" * 40)
+        glossary_entries = [
+            ("Fisher_KM", "Fisher combined p-value adjusted with Kost–McDermott correlation correction"),
+            ("SumP", "Sum of per-feature p-values; permutation p-value gauges deviation from baseline"),
+            ("CompositeScore", "Sum of -log10 adjusted p-values as an aggregate strength indicator"),
+            ("Mean|d|", "Mean absolute Cohen's d effect size across significant features"),
+            ("perm_p", "Permutation-derived significance comparing observed statistic to shuffled baseline"),
+            ("perm_used", "Indicates whether permutations (vs analytic approximation) were applied"),
+            ("km_df", "Effective degrees of freedom used in Kost–McDermott chi-square approximation"),
+            ("sig_feature_count", "Number of features passing the FDR threshold when feature selection enabled"),
+            ("sig_prop", "Proportion of tested features that remained significant after FDR control"),
+            ("omnibus_stat", "Across-task Friedman/Wilcoxon statistic measuring feature variation between tasks"),
+            ("omnibus_p", "P-value for omnibus_stat before FDR adjustment"),
+            ("omnibus_q", "FDR-adjusted p-value for the across-task omnibus test"),
+            ("omnibus_sig", "True when omnibus_q is below the configured FDR alpha"),
+            ("posthoc_q", "Pairwise task comparison FDR-adjusted q-values (matrix form in exports)"),
+            ("Δ", "Absolute difference between task and baseline means for the feature"),
+            ("d", "Cohen's d effect size comparing task vs baseline distributions"),
+            ("ratio", "Task mean divided by baseline mean (signed) for quick proportional change"),
+            ("bin", "Discretized effect bin index relative to baseline distribution quantiles"),
+        ]
+        seen_terms = set()
+        for key, description in glossary_entries:
+            if key in seen_terms:
+                continue
+            seen_terms.add(key)
+            lines.append(f"{key}: {description}")
         
         text = "\n".join(lines)
         
@@ -2324,7 +4609,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             BL.onRaw.feature_engine = self.feature_engine
         except Exception:
             pass
-        # Adjust UI: enable Connect & Login, disable analysis until connected
+    # Adjust UI: enable Connect button, disable analysis until connected
         try:
             if hasattr(self, 'connect_button'):
                 self.connect_button.setEnabled(True)
@@ -2346,17 +4631,18 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             pass
         # Inform user
         try:
-            self.log_message("Auto-connect disabled in enhanced mode. Please use 'Connect & Login'.")
+            self.log_message("Auto-connect disabled in enhanced mode. Please use 'Connect'.")
         except Exception:
             pass
 
     def start_calibration(self, phase_name):
-        # Play audio cue at the start of eyes-closed baseline
-        if phase_name == 'eyes_closed':
+        # Play audio cue at the start of any baseline capture
+        if phase_name in {'eyes_closed', 'eyes_open'}:
             try:
                 self._audio.play_start_calibration()
             except Exception:
                 pass
+        if phase_name == 'eyes_closed':
             # Reset EC diagnostics counters at the start
             try:
                 self.feature_engine.baseline_kept = 0
@@ -2367,19 +4653,114 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         super().start_calibration(phase_name)
 
     def stop_calibration(self):
-        # Capture which phase is ending before delegating
-        phase_ending = self.feature_engine.current_state
-        super().stop_calibration()
-        # Close fixation dialog if open
+        phase_ending = getattr(self.feature_engine, 'current_state', None)
+        task_ui_present = bool(getattr(self, '_task_dialog', None) or getattr(self, '_task_overlay_active', False))
+        if phase_ending == 'idle' and not task_ui_present:
+            return
+
+        try:
+            try:
+                self._calibration_timer.stop()
+            except Exception:
+                pass
+
+            if phase_ending != 'idle':
+                try:
+                    self.feature_engine.stop_calibration_phase()
+                except Exception:
+                    phase_ending = None
+
+            try:
+                if hasattr(self, 'stop_button') and self.stop_button is not None:
+                    self.stop_button.setEnabled(False)
+            except Exception:
+                pass
+
+            try:
+                if phase_ending == 'eyes_closed':
+                    if hasattr(self, 'eyes_closed_label'):
+                        self.eyes_closed_label.setText("Status: Completed")
+                    if hasattr(self, 'eyes_closed_button'):
+                        self.eyes_closed_button.setEnabled(True)
+                elif phase_ending == 'eyes_open':
+                    if hasattr(self, 'eyes_open_label'):
+                        self.eyes_open_label.setText("Status: Completed")
+                    if hasattr(self, 'eyes_open_button'):
+                        self.eyes_open_button.setEnabled(True)
+                elif phase_ending == 'task':
+                    if hasattr(self, 'task_label'):
+                        self.task_label.setText("Status: Completed")
+                    if hasattr(self, 'task_button'):
+                        self.task_button.setEnabled(True)
+            except Exception:
+                pass
+
+            try:
+                self.log_message(f"✓ Stopped {phase_ending} calibration")
+            except Exception:
+                pass
+
+            try:
+                ec_count = len(self.feature_engine.calibration_data.get('eyes_closed', {}).get('features', []))
+                eo_count = len(self.feature_engine.calibration_data.get('eyes_open', {}).get('features', []))
+                if ec_count > 0 and eo_count > 0:
+                    self.compute_baseline()
+            except Exception:
+                pass
+
+            if phase_ending == 'task':
+                try:
+                    task_windows = len(self.feature_engine.calibration_data.get('task', {}).get('features', []))
+                except Exception:
+                    task_windows = 0
+                try:
+                    if task_windows > 0:
+                        self._set_feature_status("Task captured", "ready")
+                    else:
+                        self._set_feature_status("Idle", "idle")
+                except Exception:
+                    pass
+            else:
+                try:
+                    if getattr(self.feature_engine, 'current_state', None) == 'idle':
+                        self._set_feature_status("Idle", "idle")
+                except Exception:
+                    pass
+        finally:
+            if getattr(self, '_task_dialog', None) is not None or getattr(self, '_task_overlay_active', False):
+                try:
+                    self.close_task_interface()
+                except Exception:
+                    pass
+
+            try:
+                if getattr(self, 'analyze_all_button', None):
+                    self.analyze_all_button.setEnabled(True)
+                if getattr(self, 'generate_all_report_button', None):
+                    self.generate_all_report_button.setEnabled(False)
+                if getattr(self, 'multi_task_text', None):
+                    self.multi_task_text.setVisible(True)
+                    self.multi_task_text.setPlainText(
+                        "Press 'Analyze All Tasks' to compute combined insights across completed sessions."
+                    )
+            except Exception:
+                pass
+
+            try:
+                if hasattr(self, '_stage_status_overrides'):
+                    self._stage_status_overrides[self.analysis_tab_index] = "Tasks recorded"
+                    self._refresh_stage_header()
+            except Exception:
+                pass
         try:
             if self._fixation_dialog is not None:
                 self._fixation_dialog.close()
                 self._fixation_dialog = None
         except Exception:
             pass
-        # Auditory cues for end of calibration/task
+
         try:
-            if phase_ending == 'eyes_closed':
+            if phase_ending in {'eyes_closed', 'eyes_open'}:
                 self._audio.play_end_calibration()
             elif phase_ending == 'task':
                 self._audio.play_end_task()
@@ -2389,10 +4770,54 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
     def compute_baseline(self):
         # Use enhanced EC-only baseline computation
         self.feature_engine.compute_baseline_statistics()
-        self.analyze_task_button.setEnabled(True)
+        try:
+            self.analysis_summary.clear()
+            self.analysis_summary.setVisible(False)
+        except Exception:
+            pass
+        try:
+            self._set_feature_status("Baseline ready", "ready")
+        except Exception:
+            pass
         self.log_message("✓ Baseline (eyes-closed only) computed")
 
+    def update_features_display(self):
+        """Extend base streaming update with an explicit live-feed confirmation."""
+        try:
+            super().update_features_display()
+        except Exception:
+            pass
+
+        try:
+            hint = getattr(self, "live_feature_hint", None)
+            features = getattr(self.feature_engine, "latest_features", {}) or {}
+            if hint is None:
+                return
+            if features:
+                preview_keys = ", ".join(list(features.keys())[:3])
+                if len(features) > 3:
+                    preview_keys += ", …"
+                hint.setStyleSheet("color:#047857; font-size:11px; margin-left:4px; font-weight:600;")
+                hint.setText(f"Live feed active · {len(features)} features streaming ({preview_keys})")
+            else:
+                hint.setStyleSheet("color:#64748b; font-size:11px; margin-left:4px;")
+                hint.setText("Awaiting live EEG features…")
+        except Exception:
+            pass
+
     def analyze_task(self):
+        if not getattr(self, '_allow_immediate_task_analysis', False):
+            try:
+                self.log_message("Task stored for later multi-task analysis. Run 'Analyze All Tasks' when ready.")
+            except Exception:
+                pass
+            try:
+                self._set_feature_status("Task captured", "ready")
+            except Exception:
+                pass
+            return
+
+        self._allow_immediate_task_analysis = False
         if getattr(self, '_single_task_analysis_running', False):
             self.log_message("Task analysis already running")
             return
@@ -2414,10 +4839,12 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     f"Current state: {cur}",
                     "Tip: Start a task, let it run for at least a few windows (2s each), then press Stop before Analyze."
                 ]
-                self.stats_text.setPlainText("\n".join(msg))
+                self.analysis_summary.setPlainText("\n".join(msg))
+                self.analysis_summary.setVisible(True)
                 self.log_message("No task windows collected yet—record a task and press Stop.")
             except Exception:
-                self.stats_text.setPlainText("No task data available.")
+                self.analysis_summary.setPlainText("No task data available.")
+                self.analysis_summary.setVisible(True)
             return
 
         dlg = QtWidgets.QDialog(self)
@@ -2541,7 +4968,8 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     pass
                 if isinstance(results, dict) and results.get('_error'):
                     self.log_message(f"Task analysis failed: {results['_error']}")
-                    self.stats_text.setPlainText("Task analysis failed. See logs for details.")
+                    self.analysis_summary.setPlainText("Task analysis failed. See logs for details.")
+                    self.analysis_summary.setVisible(True)
                     return
                 if results:
                     try:
@@ -2550,7 +4978,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                         pass
                     self._update_composite_summary_text()
                     try:
-                        self.generate_report_button.setEnabled(True)
+                        self._set_feature_status("Insights ready", "insights")
                     except Exception:
                         pass
                     partial_flag = getattr(self.feature_engine, 'task_summary', {}).get('partial')
@@ -2559,13 +4987,26 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     else:
                         self.log_message("✓ Enhanced task analysis completed")
                 else:
-                    self.stats_text.setPlainText("No analyzable task features.")
+                    self.analysis_summary.setPlainText("No analyzable task features.")
+                    self.analysis_summary.setVisible(True)
             QtCore.QTimer.singleShot(0, _on_done)
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
-        dlg.exec()
+        self._push_modal_overlay()
+        try:
+            dlg.exec()
+        finally:
+            self._pop_modal_overlay()
         return
+
+    def run_single_task_analysis_now(self) -> None:
+        """Explicit hook to run the single-task analysis flow when desired."""
+        self._allow_immediate_task_analysis = True
+        try:
+            EnhancedBrainLinkAnalyzerWindow.analyze_task(self)
+        finally:
+            self._allow_immediate_task_analysis = False
 
     def _update_composite_summary_text(self):
         summary = getattr(self.feature_engine, 'task_summary', None)
@@ -2577,16 +5018,31 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         composite = summary.get('composite', {}) or {}
         cosine = summary.get('cosine', {}) or {}
         effect_mean = summary.get('effect_size_mean')
-        text = self.stats_text.toPlainText()
+        text = self.analysis_summary.toPlainText()
         text += "\n\nTask-Level Decisions\n" + ("-" * 30) + "\n"
         if fisher:
             text += f"Fisher (naive) p: {fisher.get('p_naive')}\n"
-            text += f"Fisher (KM) p: {fisher.get('km_p')} (sig={fisher.get('significant')})\n"
+            ratio = fisher.get('km_df_ratio')
+            text += f"Fisher (KM) p: {fisher.get('km_p')} (sig={fisher.get('significant')})"
+            if ratio is not None:
+                text += f" | df_KM ratio={ratio:.3f}"
+            text += "\n"
         if sum_p:
-            text += f"Sum p: {sum_p.get('value')} | p_perm={sum_p.get('perm_p')}"
+            text += f"Sum p (blocks): {sum_p.get('value')} | p_perm={sum_p.get('perm_p')}"
             if sum_p.get('approximate'):
                 text += " (approx)"
             text += f" | sig={sum_p.get('significant')}\n"
+        ess = summary.get('ess') or {}
+        if ess:
+            text += f"ESS blocks: baseline={ess.get('baseline_blocks')} task={ess.get('task_blocks')} | block_len={ess.get('block_seconds')}s\n"
+        # Seed and preset
+        try:
+            preset = getattr(self.feature_engine.config, 'runtime_preset', None)
+            seed = getattr(self.feature_engine.config, 'seed', None)
+            if preset or seed is not None:
+                text += f"Permutation preset={preset} | seed={seed}\n"
+        except Exception:
+            pass
         if self.feature_engine.config.is_feature_selection and feature_sel:
             text += f"Significant features: {feature_sel.get('sig_feature_count')}"
             if feature_sel.get('sig_prop') is not None:
@@ -2598,13 +5054,15 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             text += f"Mean |d|: {effect_mean}\n"
         if cosine:
             text += f"Cosine similarity: {cosine.get('similarity')} | distance: {cosine.get('distance')} | p={cosine.get('p_value')}\n"
-        self.stats_text.setPlainText(text)
+        self.analysis_summary.setPlainText(text)
+        self.analysis_summary.setVisible(True)
 
     def generate_report(self):
         results = getattr(self.feature_engine, 'analysis_results', {}) or {}
         summary = getattr(self.feature_engine, 'task_summary', {}) or {}
         if not results:
-            self.stats_text.setPlainText("No task analysis available. Record and analyze a task first.")
+            self.analysis_summary.setPlainText("No task analysis available. Record and analyze a task first.")
+            self.analysis_summary.setVisible(True)
             return
 
         cfg = self.feature_engine.config
@@ -2683,7 +5141,8 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 lines.append(str(export_full))
 
         report_text = "\n".join(lines)
-        self.stats_text.setPlainText(report_text)
+        self.analysis_summary.setPlainText(report_text)
+        self.analysis_summary.setVisible(True)
         self.log_message("✓ Report generated")
 
     def analyze_all_tasks(self):
@@ -2692,6 +5151,13 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         if getattr(self, '_analysis_thread_running', False):
             self.log_message("Multi-task analysis already running")
             return
+
+        analyze_btn = getattr(self, 'analyze_all_button', None)
+        report_btn = getattr(self, 'generate_all_report_button', None)
+        if analyze_btn is not None:
+            analyze_btn.setEnabled(False)
+        if report_btn is not None:
+            report_btn.setEnabled(False)
 
         # Quick pre-check for tasks to avoid showing dialog unnecessarily
         tasks = self.feature_engine.calibration_data.get('tasks', {}) or {}
@@ -2703,7 +5169,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 f"Task windows in default bucket: {task_n}",
                 "Tip: Start a task from the Tasks tab, wait at least a few seconds (2s per window), then Stop and Analyze."
             ]
-            self.multi_task_text.setPlainText("\n".join(lines))
+            if getattr(self, 'multi_task_text', None):
+                self.multi_task_text.setPlainText("\n".join(lines))
+                self.multi_task_text.setVisible(True)
+            if analyze_btn is not None:
+                analyze_btn.setEnabled(True)
             return
 
         # Create Qt Signals for thread-safe progress communication
@@ -2764,9 +5234,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         agg_state = {
             'baseline_features': baseline_feature_est,
             'tasks_count': tasks_count,
+            'perm_phases_total': max(1, tasks_count + 1),
             'feature_units_done': 0,
             'perm_phase_index': 0,  # completed permutation phases
             'perm_iterations_in_phase': 0,
+            'perm_phase_completed': False,
             'current_task_feature_total': baseline_feature_est,
             'task_index': 0,  # 0..tasks_count for individual tasks; last combined
             'completed_feature_units': 0,
@@ -2798,7 +5270,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 baseline_ratio = agg_state['baseline_phase_done'] / max(1, agg_state['baseline_phase_units'])
                 feature_ratio = agg_state['feature_units_done'] / max(1, agg_state['total_feature_units'])
                 perm_units_done = agg_state['perm_phase_index'] * n_perm + agg_state['perm_iterations_in_phase']
+                perm_units_done = min(perm_units_done, agg_state['total_perm_units'])
                 perm_ratio = perm_units_done / max(1, agg_state['total_perm_units'])
+                baseline_ratio = min(1.0, baseline_ratio)
+                feature_ratio = min(1.0, feature_ratio)
+                perm_ratio = min(1.0, perm_ratio)
                 pct = (
                     baseline_ratio * BASELINE_WEIGHT +
                     feature_ratio * FEATURE_WEIGHT +
@@ -2889,14 +5365,22 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     agg_state['first_perm_callback'] = True
                 # Update permutation iterations for current phase
                 agg_state['perm_iterations_in_phase'] = completed
-                _set_progress(f"Permutations (phase {agg_state['perm_phase_index']+1}/{tasks_count+1}): {completed}/{total}")
+                display_phase = min(agg_state['perm_phase_index'] + 1, agg_state['perm_phases_total'])
+                _set_progress(f"Permutations (phase {display_phase}/{agg_state['perm_phases_total']}): {completed}/{total}")
                 if progress_trace_enabled:
                     _trace(
                         f"perm_state phase={agg_state['perm_phase_index']} completed={completed} total={total} iterations_in_phase={agg_state['perm_iterations_in_phase']}"
                     )
                 if completed == total:
-                    agg_state['perm_phase_index'] += 1
+                    if not agg_state['perm_phase_completed']:
+                        if agg_state['perm_phase_index'] < agg_state['perm_phases_total']:
+                            agg_state['perm_phase_index'] += 1
+                        agg_state['perm_phase_completed'] = True
                     agg_state['perm_iterations_in_phase'] = 0
+                    if agg_state['perm_phase_index'] >= agg_state['perm_phases_total']:
+                        _set_progress("Finalizing multi-task results...")
+                else:
+                    agg_state['perm_phase_completed'] = False
             except Exception:
                 pass
         
@@ -2994,7 +5478,16 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 # Run actual analysis
                 res = self.feature_engine.analyze_all_tasks_data()
             except Exception as e:
-                res = {'_error': str(e)}
+                tb = None
+                try:
+                    import traceback
+                    tb = traceback.format_exc()
+                except Exception:
+                    tb = None
+                error_payload: Dict[str, Any] = {'_error': str(e)}
+                if tb:
+                    error_payload['_traceback'] = tb
+                res = error_payload
             finally:
                 # cleanup
                 try:
@@ -3017,15 +5510,37 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             """GUI thread slot for analysis completion."""
             self._analysis_thread_running = False
             try:
+                heartbeat_timer.stop()
+            except Exception:
+                pass
+            try:
+                progress.setValue(100)
+                label.setText("Analysis complete")
+            except Exception:
+                pass
+            try:
                 if dlg.isVisible():
-                    dlg.accept()
+                    QtCore.QTimer.singleShot(0, dlg.accept)
             except Exception:
                 pass
 
+            if analyze_btn is not None:
+                analyze_btn.setEnabled(True)
+
             # Handle error
             if isinstance(res, dict) and res.get('_error'):
-                self.log_message(f"Analysis failed: {res.get('_error')}")
-                self.multi_task_text.setPlainText("Analysis failed. See logs for details.")
+                err_msg = res.get('_error')
+                self.log_message(f"Analysis failed: {err_msg}")
+                tb_txt = res.get('_traceback')
+                if tb_txt:
+                    for line in tb_txt.strip().splitlines():
+                        try:
+                            self.log_message(line)
+                        except Exception:
+                            print(line)
+                if getattr(self, 'multi_task_text', None):
+                    self.multi_task_text.setPlainText("Analysis failed. See logs for details.")
+                    self.multi_task_text.setVisible(True)
                 return
 
             # Build summary text
@@ -3058,7 +5573,12 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 lines.append("Across-task significant features:")
                 lines.extend([f"  - {f}" for f in sig_features])
 
-            self.multi_task_text.setPlainText("\n".join(lines))
+            if getattr(self, 'multi_task_text', None):
+                self.multi_task_text.setPlainText("\n".join(lines))
+                self.multi_task_text.setVisible(True)
+            self._mark_stage_done(self.multi_task_tab_index, "Insights ready")
+            if report_btn is not None:
+                report_btn.setEnabled(True)
 
         # Connect completion signal
         signals.analysis_complete.connect(_on_analysis_complete)
@@ -3079,7 +5599,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         t.start()
 
         # Show modal dialog (blocks UI but progress updates remain responsive)
-        dlg.exec()
+        self._push_modal_overlay()
+        try:
+            dlg.exec()
+        finally:
+            self._pop_modal_overlay()
         return
     # PyQtGraph-only plot updater following BrainLinkRawEEG_Plot.py fix pattern
     def update_live_plot(self):
@@ -3327,15 +5851,17 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             except Exception:
                 pass
 
-            # Responsive sizing within available screen
+            # Responsive sizing within available screen (constrained to prevent overflow)
             try:
                 screen = QtWidgets.QApplication.primaryScreen()
                 if screen:
                     avail = screen.availableGeometry()
+                    # Limit dialog to 70% of screen height max to prevent overflow
                     target_w = min(max(int(avail.width() * 0.45), 640), min(900, avail.width()-80))
-                    target_h = min(max(int(avail.height() * 0.55), 480), int(avail.height()*0.85))
+                    target_h = min(max(int(avail.height() * 0.55), 480), int(avail.height()*0.70))
                     dlg.resize(target_w, target_h)
                     dlg.setMinimumWidth(int(target_w * 0.9))
+                    dlg.setMaximumHeight(int(avail.height() * 0.70))
             except Exception:
                 # Fallback width
                 dlg.resize(700, 600)
@@ -3373,10 +5899,23 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             next_phase_label.setStyleSheet("font-size:11px;color:#BBBBBB;font-style:italic;margin-top:2px;")
             layout.addWidget(next_phase_label)
 
-            # Image placeholder (used for non-video media)
+            # Image placeholder (used for non-video media) with size constraints
             media_label = QLabel("")
             media_label.setAlignment(Qt.AlignCenter)
             media_label.setStyleSheet("background:#222;border:1px solid #333;padding:4px;")
+            # Set maximum height to prevent overflow - images will be scaled to fit
+            try:
+                screen = QtWidgets.QApplication.primaryScreen()
+                if screen:
+                    avail = screen.availableGeometry()
+                    # Reserve space for other UI elements (header, timer, buttons ~300px)
+                    max_media_height = int(avail.height() * 0.40)  # 40% of screen for media
+                    media_label.setMaximumHeight(max_media_height)
+                else:
+                    media_label.setMaximumHeight(400)
+            except Exception:
+                media_label.setMaximumHeight(400)
+            media_label.setScaledContents(False)  # Maintain aspect ratio
             layout.addWidget(media_label)
 
             # Optional video widget (only create if a video phase exists and embedding is allowed)
@@ -3408,18 +5947,28 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             prompt_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             prompt_label.setWordWrap(True)
             prompt_label.setStyleSheet("font-size:13px;margin-top:6px;")
+            # Constrain prompt label height to prevent excessive growth
+            try:
+                prompt_label.setMaximumHeight(150)
+            except Exception:
+                pass
             layout.addWidget(prompt_label)
 
             stop_btn = QPushButton("Stop Now")
             layout.addWidget(stop_btn)
 
-            # Stretch factors to keep timer & header compact while allowing prompt to grow
+            # Stretch factors to keep timer & header compact while preventing overflow
             try:
-                layout.setStretchFactor(prompt_label, 2)
+                layout.setStretchFactor(media_label, 3)  # Give media more priority
+                layout.setStretchFactor(prompt_label, 1)  # Reduced from 2
             except Exception:
                 pass
 
             self._task_dialog = dlg
+            try:
+                self._register_task_dialog(dlg)
+            except Exception:
+                pass
             self._phase_structure = phase_structure
             self._phase_index = 0
             self._phase_remaining = phase_structure[0].get('duration', 1)
@@ -3653,13 +6202,17 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                         if pm.isNull():
                             media_label.setText(f"[Invalid image: {img_name}]")
                             return
-                        # Constrain very large images to avoid GPU memory spikes
-                        max_w = 640
-                        disp_w = min(max_w, pm.width())
+                        # Scale image to fit within label constraints (both width and height)
+                        max_w = media_label.maximumWidth() if media_label.maximumWidth() < 16777215 else 640
+                        max_h = media_label.maximumHeight() if media_label.maximumHeight() < 16777215 else 400
+                        # Scale to fit within both width and height constraints
                         try:
-                            media_label.setPixmap(pm.scaledToWidth(disp_w, Qt.SmoothTransformation))
+                            scaled_pm = pm.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            media_label.setPixmap(scaled_pm)
                         except Exception:
-                            media_label.setPixmap(pm)
+                            # Fallback: scale by width only
+                            disp_w = min(max_w, pm.width())
+                            media_label.setPixmap(pm.scaledToWidth(disp_w, Qt.SmoothTransformation))
                         # Cache original for fullscreen cover scaling
                         try:
                             self._fs_last_pm = pm
@@ -3992,10 +6545,49 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             stop_btn.clicked.connect(manual_stop)
 
             try:
-                dlg.setModal(False)
+                dlg.setModal(True)
+                dlg.setWindowModality(QtCore.Qt.ApplicationModal)
             except Exception:
                 pass
-            dlg.show()
+
+            # Use the same overlay semantics as the protocol dialog for consistent dimming
+            overlay_widget = self._push_modal_overlay()
+            if overlay_widget is None:
+                try:
+                    fallback = QtWidgets.QFrame(self)
+                    fallback.setObjectName("ModalOverlay")
+                    fallback.setGeometry(self.rect())
+                    fallback.setStyleSheet("background-color: rgba(15, 23, 42, 200);")
+                    fallback.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+                    fallback.show()
+                    fallback.raise_()
+                    self._modal_overlay = fallback
+                    self._overlay_refcount = max(getattr(self, '_overlay_refcount', 0), 1)
+                    overlay_widget = fallback
+                except Exception:
+                    overlay_widget = None
+            if overlay_widget is not None:
+                try:
+                    overlay_widget.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+
+                    def _overlay_click(_event, dialog_ref=dlg):
+                        try:
+                            if dialog_ref is not None and dialog_ref.isVisible():
+                                dialog_ref.raise_()
+                        except Exception:
+                            pass
+
+                    overlay_widget.mousePressEvent = _overlay_click  # type: ignore[assignment]
+                except Exception:
+                    pass
+            try:
+                QtCore.QTimer.singleShot(0, lambda d=dlg: self._position_task_dialog(d))
+            except Exception:
+                pass
+            try:
+                dlg.exec()
+            finally:
+                self._pop_modal_overlay()
             return
 
         # Fallback: single-phase (cognitive micro-task) dialog
@@ -4045,6 +6637,10 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         stop_btn = QPushButton("Stop Now", dlg)
         layout.addWidget(stop_btn)
         self._task_dialog = dlg
+        try:
+            self._register_task_dialog(dlg)
+        except Exception:
+            pass
         self._task_seconds_remaining = duration
         t = QTimer(self)
         t.setInterval(1000)
@@ -4076,10 +6672,48 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             self.stop_calibration()
         stop_btn.clicked.connect(manual_stop_single)
         try:
-            dlg.setModal(False)
+            dlg.setModal(True)
+            dlg.setWindowModality(QtCore.Qt.ApplicationModal)
         except Exception:
             pass
-        dlg.show()
+        # Use the same overlay semantics as the pathway selection dialog
+        overlay_widget = self._push_modal_overlay()
+        if overlay_widget is None:
+            try:
+                fallback = QtWidgets.QFrame(self)
+                fallback.setObjectName("ModalOverlay")
+                fallback.setGeometry(self.rect())
+                fallback.setStyleSheet("background-color: rgba(15, 23, 42, 200);")
+                fallback.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+                fallback.show()
+                fallback.raise_()
+                self._modal_overlay = fallback
+                self._overlay_refcount = max(getattr(self, '_overlay_refcount', 0), 1)
+                overlay_widget = fallback
+            except Exception:
+                overlay_widget = None
+        if overlay_widget is not None:
+            try:
+                overlay_widget.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+
+                def _overlay_click_single(_event, dialog_ref=dlg):
+                    try:
+                        if dialog_ref is not None and dialog_ref.isVisible():
+                            dialog_ref.raise_()
+                    except Exception:
+                        pass
+
+                overlay_widget.mousePressEvent = _overlay_click_single  # type: ignore[assignment]
+            except Exception:
+                pass
+        try:
+            QtCore.QTimer.singleShot(0, lambda d=dlg: self._position_task_dialog(d))
+        except Exception:
+            pass
+        try:
+            dlg.exec()
+        finally:
+            self._pop_modal_overlay()
 
     def close_task_interface(self):
         # Stop timer and close dialog if present
@@ -4098,6 +6732,41 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             pass
         finally:
             self._task_dialog = None
+        self._release_task_overlay()
+
+    def _position_task_dialog(self, dlg: QtWidgets.QWidget) -> None:
+        """Anchor the task dialog closer to the top of the main window for peripheral vision."""
+        try:
+            if dlg is None:
+                return
+            screen = QtWidgets.QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen else None
+            target_rect = None
+            try:
+                if self is not None and self.isVisible():
+                    target_rect = self.frameGeometry()
+            except Exception:
+                target_rect = None
+            if target_rect is None:
+                target_rect = avail
+            if target_rect is None:
+                return
+            dlg_rect = dlg.frameGeometry()
+            w = dlg_rect.width() or dlg.width()
+            h = dlg_rect.height() or dlg.height()
+            center_x = target_rect.center().x()
+            # Position closer to the top (approx 12% from the top edge)
+            top_y = target_rect.top() + int(target_rect.height() * 0.08)
+            x = center_x - w // 2
+            y = top_y
+            if avail is not None:
+                max_x = avail.right() - w
+                max_y = avail.bottom() - h
+                x = max(avail.left(), min(x, max_x))
+                y = max(avail.top(), min(y, max_y))
+            dlg.move(int(x), int(y))
+        except Exception:
+            pass
 
     # Guard: avoid reconnecting if already connected
     def on_connect_clicked(self):
@@ -4131,46 +6800,80 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         # If already selected, do nothing
         if self._selected_protocol:
             return
-        dlg = QDialog(self)
+        dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Select Protocol")
-        try:
-            dlg.setStyleSheet("background:#1e1e1e;color:#eee;")
-        except Exception:
-            pass
-        layout = QVBoxLayout(dlg)
-        msg = QLabel("Choose which protocol to run. Baseline and Cognitive tasks will be included.")
-        msg.setWordWrap(True)
-        layout.addWidget(msg)
-        # Radio buttons
-        group_box = QtWidgets.QGroupBox("Protocols")
-        v = QVBoxLayout(group_box)
-        radios = {}
+        dlg.setModal(True)
+        dlg.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
+        dlg.setMinimumWidth(420)
+
+        title_label = QLabel("Choose your pathway")
+        title_label.setObjectName("DialogTitle")
+
+        subtitle_label = QLabel("Pick the protocol focus to tailor your task list. Baseline and core cognitive exercises stay included.")
+        subtitle_label.setObjectName("DialogSubtitle")
+        subtitle_label.setWordWrap(True)
+
+        card = QtWidgets.QFrame()
+        card.setObjectName("DialogCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(10)
+
+        prompt_label = QLabel("Available pathways")
+        prompt_label.setObjectName("DialogSectionTitle")
+        card_layout.addWidget(prompt_label)
+
+        button_group = QtWidgets.QButtonGroup(dlg)
+        radios: Dict[str, QtWidgets.QRadioButton] = {}
         for name in ["Personal Pathway", "Connection", "Lifestyle"]:
             rb = QtWidgets.QRadioButton(name)
-            v.addWidget(rb)
+            button_group.addButton(rb)
             radios[name] = rb
-        # Default selection
+            card_layout.addWidget(rb)
+
         radios["Personal Pathway"].setChecked(True)
-        layout.addWidget(group_box)
-        # Buttons
-        btn = QPushButton("Continue")
-        layout.addWidget(btn)
-        def _accept():
-            for name, rb in radios.items():
-                if rb.isChecked():
-                    self._selected_protocol = name
-                    break
+        card_layout.addStretch()
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        ok_button = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        cancel_button = buttons.button(QtWidgets.QDialogButtonBox.Cancel)
+        if ok_button is not None:
+            ok_button.setText("Continue")
+            ok_button.setDefault(True)
+        if cancel_button is not None:
+            cancel_button.setText("Cancel")
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(card)
+        layout.addWidget(buttons, alignment=QtCore.Qt.AlignRight)
+
+        def _accept() -> None:
+            checked = button_group.checkedButton()
+            if checked is not None:
+                self._selected_protocol = checked.text()
             try:
                 self._apply_protocol_filter()
             except Exception:
                 pass
-            dlg.close()
-        btn.clicked.connect(_accept)
+            dlg.accept()
+
+        buttons.accepted.connect(_accept)
+        buttons.rejected.connect(dlg.reject)
+
         try:
-            dlg.setModal(True)
+            BL.apply_modern_dialog_theme(dlg)
         except Exception:
             pass
-        dlg.show()
+
+        self._push_modal_overlay()
+        try:
+            dlg.exec()
+        finally:
+            self._pop_modal_overlay()
 
     def _apply_protocol_filter(self):
         # Rebuild task combo to include cognitive tasks + selected protocol tasks
@@ -4222,8 +6925,9 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
 
 class AudioFeedback:
     """Simple auditory cues using winsound on Windows; no-op elsewhere."""
-    def __init__(self):
-        self.is_windows = (platform.system() == 'Windows')
+    def __init__(self, target_os: Optional[str] = None):
+        normalized = (target_os or platform.system() or '').strip().lower()
+        self.is_windows = normalized.startswith('win')
         if self.is_windows:
             try:
                 import winsound  # noqa: F401
@@ -4248,24 +6952,24 @@ class AudioFeedback:
 
     # Public cues
     def play_start_calibration(self):
-        # Two quick ascending beeps
-        self._beep([(800, 150), (1000, 150)])
+        # Single confirmation beep for calibration start
+        self._beep([(900, 220)])
 
     def play_end_calibration(self):
-        # One longer low beep
-        self._beep([(600, 350)])
+        # Two short beeps to signal calibration end
+        self._beep([(900, 180), (900, 180)])
 
     def play_phase_transition(self):
         # Single short confirmation beep
         self._beep([(950, 120)])
 
     def play_start_task(self):
-        # Triple quick beeps
-        self._beep([(800, 150), (1000, 150)])
+        # Single confirmation beep for task start
+        self._beep([(900, 220)])
 
     def play_end_task(self):
-        # Descending two beeps
-        self._beep([(600, 350)])
+        # Two short beeps to signal task completion
+        self._beep([(900, 180), (900, 180)])
 
 
 if __name__ == "__main__":
@@ -4276,6 +6980,11 @@ if __name__ == "__main__":
     os_dialog = BL.OSSelectionDialog()
     if os_dialog.exec() == QtWidgets.QDialog.Accepted:
         selected_os = os_dialog.get_selected_os()
+        os.environ['BL_SELECTED_OS'] = selected_os or "unknown"
+        chosen_qt_platform = _qt_platform_key(selected_os)
+        host_qt_platform = _qt_platform_key(platform.system())
+        if chosen_qt_platform and chosen_qt_platform == host_qt_platform:
+            os.environ['QT_QPA_PLATFORM'] = chosen_qt_platform
         window = EnhancedBrainLinkAnalyzerWindow(selected_os)
         window.show()
         sys.exit(app.exec())

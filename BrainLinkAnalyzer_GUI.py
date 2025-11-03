@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BrainLink Feature Analysis GUI
+MindLink Feature Analysis GUI
 Based on the original BrainCompanion but performs feature analysis instead of sending data.
 Includes all original sampling, processing, and authentication from the mother code.
 """
@@ -16,8 +16,10 @@ import platform
 import ssl
 import getpass
 from collections import deque
+import weakref
+from typing import Any, Dict, List, Optional
 
-# REAL BRAINLINK PARSER - NO DUMMY DATA ALLOWED
+# REAL MINDLINK PARSER - NO DUMMY DATA ALLOWED
 from BrainLinkParser.BrainLinkParser import BrainLinkParser
 
 from PySide6.QtWidgets import (
@@ -25,7 +27,8 @@ from PySide6.QtWidgets import (
     QPushButton, QRadioButton, QButtonGroup, QDialog, QFormLayout, QLineEdit,
     QDialogButtonBox, QGroupBox, QCheckBox, QTextEdit, QMessageBox, QInputDialog,
     QTabWidget, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QTableWidget,
-    QTableWidgetItem, QHeaderView, QSplitter, QFrame, QGridLayout, QFileDialog
+    QTableWidgetItem, QHeaderView, QSplitter, QFrame, QGridLayout, QFileDialog,
+    QSizePolicy
 )
 from PySide6.QtCore import QTimer, Qt, QSettings, QThread, Signal
 from PySide6.QtGui import QIcon, QFont
@@ -44,9 +47,18 @@ from scipy.stats import zscore
 from task_analyzer import TaskAnalyzer
 from event_parser import parse_events
 from task_reporting import render_task_report, render_two_session_agreement
+# Optional extra tasks plugin - import dynamically to avoid static resolution errors
 try:
-    from extra_tasks import EXTRA_TASKS
-except Exception:
+    import importlib
+    import importlib.util
+    if importlib.util.find_spec("extra_tasks") is not None:
+        mod = importlib.import_module("extra_tasks")
+        EXTRA_TASKS = getattr(mod, "EXTRA_TASKS", {})
+    else:
+        EXTRA_TASKS = {}
+except Exception as e:
+    # Non-fatal: continue with empty extra tasks and log a warning
+    print(f"Warning: optional module 'extra_tasks' not imported: {e}")
     EXTRA_TASKS = {}
 
 # Import winreg only on Windows
@@ -79,6 +91,84 @@ def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller."""
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     return os.path.join(base_path, relative_path)
+
+
+MODERN_DIALOG_STYLESHEET = """
+QDialog {
+    background:#f8fafc;
+}
+QLabel#DialogTitle {
+    font-size:18px;
+    font-weight:600;
+    color:#1f2937;
+}
+QLabel#DialogSubtitle {
+    font-size:13px;
+    color:#475569;
+}
+QLabel#DialogSectionTitle,
+QLabel#DialogSectionLabel {
+    font-size:13px;
+    font-weight:600;
+    color:#1f2937;
+}
+QFrame#DialogCard {
+    background:#ffffff;
+    border:1px solid #e2e8f0;
+    border-radius:12px;
+}
+QLineEdit,
+QComboBox,
+QTextEdit {
+    font-size:13px;
+    padding:8px 10px;
+    border:1px solid #cbd5e1;
+    border-radius:8px;
+    background:#f8fafc;
+    color:#1f2937;
+}
+QLineEdit:focus,
+QComboBox:focus,
+QTextEdit:focus {
+    border-color:#3b82f6;
+    background:#ffffff;
+}
+QLineEdit::placeholder {
+    color:#94a3b8;
+}
+QCheckBox,
+QRadioButton {
+    font-size:13px;
+    color:#1f2937;
+    spacing:8px;
+}
+QDialogButtonBox {
+    border-top:1px solid transparent;
+}
+QDialogButtonBox QPushButton {
+    background-color:#2563eb;
+    color:#ffffff;
+    border-radius:8px;
+    padding:8px 18px;
+    font-size:13px;
+    border:0;
+}
+QDialogButtonBox QPushButton:hover {
+    background-color:#1d4ed8;
+}
+QDialogButtonBox QPushButton:pressed {
+    background-color:#1e40af;
+}
+QDialogButtonBox QPushButton:disabled {
+    background-color:#dbeafe;
+    color:#64748b;
+}
+"""
+
+
+def apply_modern_dialog_theme(dialog: QDialog) -> None:
+    """Apply the refreshed light theme to modal dialogs for UI consistency."""
+    dialog.setStyleSheet(MODERN_DIALOG_STYLESHEET)
 
 # Global variables from mother code
 BACKEND_URL = None
@@ -113,9 +203,9 @@ FEATURE_NAMES = [
 AVAILABLE_TASKS = {
     'mental_math': {
         'name': 'Mental Math',
-        'description': 'Perform mental arithmetic (e.g., count backwards from 100 by 7s)',
+        'description': 'Perform mental arithmetic (e.g., count backwards from 1000 by 7s)',
         'duration': 60,
-        'instructions': 'Count backwards from 100 by 7s: 100, 93, 86, 79...'
+        'instructions': 'Count backwards from 1000 by 7s: 1000, 993, 986, 979...'
     },
     'visual_imagery': {
         'name': 'Visual Imagery',
@@ -124,7 +214,7 @@ AVAILABLE_TASKS = {
         'instructions': 'Close your eyes and visualize walking through your home in detail. Wait for the CUE, then begin vivid imagery.',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
-            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Get ready – prepare your visual scene (do not start yet).'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Visualize walking through your home in rich sensory detail continuously. (Start on beep sound).'},
             {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'IMAGERY: Visualize walking through your home in rich sensory detail continuously.'}
         ]
     },
@@ -141,7 +231,7 @@ AVAILABLE_TASKS = {
         'instructions': 'Focus all attention on your breathing. Wait for the CUE, then begin counting breaths 1–10 and repeat.',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
-            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to focus (settle posture, reduce movement).'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted.'},
             {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted.'}
         ]
     },
@@ -173,22 +263,22 @@ AVAILABLE_TASKS = {
     'name': 'Emotion Recognition',
         'description': 'View static emotional face images with timed phases.',
         'duration': 114,  # 6 images × 19s each (8s cue + 11s look+resonate)
-        'instructions': 'For each face: wait for CUE, then LOOK & RESONATE (observe and internally label emotion repeatedly).',
+        'instructions': 'For each face: wait for CUE, then LOOK & RESONATE.',
         'phases': ['analyze', 'rest'],
         'continuous_recording': True,  # Record throughout entire task
         'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to LOOK & RESONATE with the upcoming face.'},
+            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 0, 'instruction': 'LOOK & RESONATE'},
+            {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to LOOK & RESONATE with the upcoming face.'},
+            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 1, 'instruction': 'LOOK & RESONATE'},
             {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to observe the upcoming face.'},
-            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 0, 'instruction': 'LOOK & RESONATE: Observe and internally label the emotion repeatedly.'},
+            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 2, 'instruction': 'LOOK & RESONATE'},
             {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to observe the upcoming face.'},
-            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 1, 'instruction': 'LOOK & RESONATE: Observe and internally label the emotion repeatedly.'},
+            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 3, 'instruction': 'LOOK & RESONATE'},
             {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to observe the upcoming face.'},
-            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 2, 'instruction': 'LOOK & RESONATE: Observe and internally label the emotion repeatedly.'},
+            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 4, 'instruction': 'LOOK & RESONATE'},
             {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to observe the upcoming face.'},
-            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 3, 'instruction': 'LOOK & RESONATE: Observe and internally label the emotion repeatedly.'},
-            {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to observe the upcoming face.'},
-            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 4, 'instruction': 'LOOK & RESONATE: Observe and internally label the emotion repeatedly.'},
-            {'type': 'cue', 'duration': 8, 'record': True, 'instruction': 'CUE: Prepare to observe the upcoming face.'},
-            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 5, 'instruction': 'LOOK & RESONATE: Observe and internally label the emotion repeatedly.'}
+            {'type': 'viewing', 'duration': 11, 'record': True, 'media_index': 5, 'instruction': 'LOOK & RESONATE'}
         ],
         'media': {
             'images': [
@@ -253,7 +343,7 @@ AVAILABLE_TASKS = {
                 },
                 {
                     'title': 'FOCUS ON NEGATIVES',
-                    'scenario': 'Travel budget overrun',
+                    'scenario': 'Going to miss a flight',
                     'instruction': 'Think about what went wrong with this situation. Focus on the problems and negative consequences.',
                     'duration': 30
                 }
@@ -341,7 +431,7 @@ def detect_brainlink():
             if hasattr(port, 'hwid'):
                 print(f"  HWID: {port.hwid}")
                 if any(hw in port.hwid for hw in ALLOWED_HWIDS):
-                    print(f"✓ Found authorized BrainLink device: {port.device}")
+                    print(f"✓ Found authorized MindLink device: {port.device}")
                     return port.device
             else:
                 print(f"  No HWID attribute found")
@@ -353,21 +443,21 @@ def detect_brainlink():
         for port in ports:
             if hasattr(port, 'hwid'):
                 if any(hw in port.hwid for hw in BRAINLINK_SERIALS):
-                    print(f"✓ Found BrainLink device by serial: {port.device}")
+                    print(f"✓ Found MindLink device by serial: {port.device}")
                     return port.device
     elif platform.system() == 'Darwin':
         for port in ports:
             if any(id in port.description.lower() for id in ["brainlink", "neurosky", "ftdi", "silabs", "ch340"]):
-                print(f"✓ Found BrainLink device by description: {port.device}")
+                print(f"✓ Found MindLink device by description: {port.device}")
                 return port.device
             if port.device.startswith("/dev/tty.usbserial"):
-                print(f"✓ Found BrainLink device by device name: {port.device}")
+                print(f"✓ Found MindLink device by device name: {port.device}")
                 return port.device
             if port.device.startswith("/dev/tty.usbmodem"):
-                print(f"✓ Found BrainLink device by device name: {port.device}")
+                print(f"✓ Found MindLink device by device name: {port.device}")
                 return port.device
     
-    print("✗ No BrainLink device found")
+    print("✗ No MindLink device found")
     print("Available ports:")
     for port in ports:
         hwid_info = f" (HWID: {port.hwid})" if hasattr(port, 'hwid') else ""
@@ -393,7 +483,7 @@ def onRaw(raw):
             diffs = np.diff(values)
             if np.std(diffs) < 0.1 or np.all(np.abs(diffs) < 0.01):
                 print("WARNING: Detected potentially artificial/dummy data patterns!")
-                print("Please ensure you're connected to a REAL BrainLink device!")
+                print("Please ensure you're connected to a REAL MindLink device!")
     else:
         onRaw._last_values = [raw]
     
@@ -481,7 +571,29 @@ def onEEG(data):
     print("EEG -> attention:", data.attention, "meditation:", data.meditation)
 
 def onExtendEEG(data):
-    print("Extended EEG -> battery:", data.battery, "version:", data.version)
+    try:
+        battery_val = getattr(data, 'battery', None)
+        firmware = getattr(data, 'version', None)
+        print("Extended EEG -> battery:", battery_val, "version:", firmware)
+    except Exception:
+        print("Extended EEG packet received")
+
+    window_ref = None
+    if 'BrainLinkAnalyzerWindow' in globals():
+        try:
+            window_ref = getattr(BrainLinkAnalyzerWindow, '_active_window', None)
+        except Exception:
+            window_ref = None
+    if window_ref:
+        try:
+            window = window_ref()
+        except Exception:
+            window = None
+        if window is not None:
+            try:
+                window.handle_extended_eeg_from_packet(data)
+            except Exception:
+                pass
 
 def onGyro(x, y, z):
     print(f"Gyro -> x={x}, y={y}, z={z}")
@@ -490,11 +602,11 @@ def onRR(rr1, rr2, rr3):
     print(f"RR -> rr1={rr1}, rr2={rr2}, rr3={rr3}")
 
 def run_brainlink(serial_obj):
-    """BrainLink thread function from mother code"""
+    """MindLink thread function from mother code"""
     global stop_thread_flag
     parser = BrainLinkParser(onEEG, onExtendEEG, onGyro, onRR, onRaw)
     
-    print("BrainLink thread started")
+    print("MindLink thread started")
 
     @serial_obj.on_message()
     def handle_serial_message(msg: bytes):
@@ -512,7 +624,7 @@ def run_brainlink(serial_obj):
         while not stop_thread_flag:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Exiting BrainLink thread (KeyboardInterrupt).")
+        print("Exiting MindLink thread (KeyboardInterrupt).")
     finally:
         if serial_obj.is_open:
             serial_obj.close()
@@ -523,7 +635,9 @@ class OSSelectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Select Your Operating System")
-        self.setMinimumWidth(300)
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.setMinimumWidth(360)
 
         # Determine default based on auto-detection
         if sys.platform.startswith("win"):
@@ -542,17 +656,46 @@ class OSSelectionDialog(QDialog):
         else:
             self.radio_macos.setChecked(True)
 
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel("Please select your operating system:"))
-        layout.addWidget(self.radio_windows)
-        layout.addWidget(self.radio_macos)
+        title_label = QLabel("Choose your Operating System (OS)")
+        title_label.setObjectName("DialogTitle")
+
+        subtitle_label = QLabel("Pick the OS that matches your MindLink setup.")
+        subtitle_label.setObjectName("DialogSubtitle")
+
+        card = QFrame()
+        card.setObjectName("DialogCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(10)
+
+        prompt_label = QLabel("Please select your OS:")
+        prompt_label.setObjectName("DialogSectionTitle")
+        card_layout.addWidget(prompt_label)
+        card_layout.addWidget(self.radio_windows)
+        card_layout.addWidget(self.radio_macos)
+        card_layout.addStretch()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        if ok_button:
+            ok_button.setText("Continue")
+            ok_button.setDefault(True)
+        if cancel_button:
+            cancel_button.setText("Cancel")
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(card)
+        layout.addWidget(buttons, alignment=Qt.AlignRight)
 
         self.setLayout(layout)
+        apply_modern_dialog_theme(self)
 
     def get_selected_os(self):
         if self.radio_windows.isChecked():
@@ -564,61 +707,99 @@ class OSSelectionDialog(QDialog):
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Login")
+        self.setWindowTitle("Sign in to MindLink")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         try:
             self.setWindowIcon(QIcon(resource_path("assets/favicon.ico")))
         except:
             pass
-        self.setMinimumWidth(300)
-        self.settings = QSettings("BrainLink", "FeatureAnalyzer")
+        self.setMinimumWidth(380)
+        self.settings = QSettings("MindLink", "FeatureAnalyzer")
         
         self.username_edit = QLineEdit()
         saved_username = self.settings.value("username", "")
         self.username_edit.setText(saved_username)
+        self.username_edit.setPlaceholderText("you@example.com")
+        self.username_edit.setClearButtonEnabled(True)
         
         self.password_edit = QLineEdit()
         saved_password = self.settings.value("password", "")
         self.password_edit.setText(saved_password)
         self.password_edit.setEchoMode(QLineEdit.Password)
+        self.password_edit.setPlaceholderText("Password")
+        self.password_edit.setClearButtonEnabled(True)
         
         # Add an eye icon action to toggle password visibility
         self.eye_visible = False
         try:
             self.eye_action = self.password_edit.addAction(QIcon(resource_path("assets/eye-off.png")), QLineEdit.TrailingPosition)
             self.eye_action.triggered.connect(self.toggle_password_visibility)
+            self.eye_action.setToolTip("Show password")
         except:
             pass
         
-        self.remember_checkbox = QCheckBox("Remember Me")
+        self.remember_checkbox = QCheckBox("Keep me signed in")
+        self.remember_checkbox.setTristate(False)
         if saved_username:
             self.remember_checkbox.setChecked(True)
         
+        title_label = QLabel("Welcome!")
+        title_label.setObjectName("DialogTitle")
+
+        subtitle_label = QLabel("Use your Mindspeller credentials to continue.")
+        subtitle_label.setObjectName("DialogSubtitle")
+
         form_layout = QFormLayout()
-        form_layout.addRow("Username:", self.username_edit)
-        form_layout.addRow("Password:", self.password_edit)
-        form_layout.addRow("", self.remember_checkbox)
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form_layout.setHorizontalSpacing(14)
+        form_layout.setVerticalSpacing(14)
+
+        username_label = QLabel("Username")
+        username_label.setObjectName("DialogSectionLabel")
+        password_label = QLabel("Password")
+        password_label.setObjectName("DialogSectionLabel")
+
+        form_layout.addRow(username_label, self.username_edit)
+        form_layout.addRow(password_label, self.password_edit)
+
+        form_card = QFrame()
+        form_card.setObjectName("DialogCard")
+        card_layout = QVBoxLayout(form_card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(12)
+        card_layout.addLayout(form_layout)
+        card_layout.addWidget(self.remember_checkbox)
         
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        if ok_button:
+            ok_button.setText("Sign in")
+            ok_button.setDefault(True)
+        if cancel_button:
+            cancel_button.setText("Cancel")
         
         layout = QVBoxLayout()
-        layout.addLayout(form_layout)
-        layout.addWidget(buttons)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(form_card)
+        layout.addWidget(buttons, alignment=Qt.AlignRight)
         self.setLayout(layout)
-        # Apply dark theme styling (moved inside __init__ to avoid NameError)
-        self.setStyleSheet("""
-            QLabel { font-size: 14px; color: #ECEFF1; }
-            QLineEdit { font-size: 14px; padding: 4px; background:#1e2124; color:#f5f7f9; border:1px solid #2c3136; border-radius:4px; }
-            QCheckBox { font-size: 14px; color:#d0d4d8; }
-            QDialog { background-color: #141619; }
-        """)
+
+        apply_modern_dialog_theme(self)
     
     def toggle_password_visibility(self):
         if self.eye_visible:
             self.password_edit.setEchoMode(QLineEdit.Password)
             try:
                 self.eye_action.setIcon(QIcon(resource_path("assets/eye-off.png")))
+                self.eye_action.setToolTip("Show password")
             except:
                 pass
             self.eye_visible = False
@@ -626,6 +807,7 @@ class LoginDialog(QDialog):
             self.password_edit.setEchoMode(QLineEdit.Normal)
             try:
                 self.eye_action.setIcon(QIcon(resource_path("assets/eye.png")))
+                self.eye_action.setToolTip("Hide password")
             except:
                 pass
             self.eye_visible = True
@@ -843,17 +1025,19 @@ class FeatureAnalysisEngine:
 
 # --- Main Window ---
 class BrainLinkAnalyzerWindow(QMainWindow):
+    battery_update = Signal(object, object)
+    _active_window: Optional[weakref.ReferenceType] = None
     def __init__(self, user_os, parent=None):
         super().__init__(parent)
         self.user_os = user_os
-        self.setWindowTitle(f"BrainLink Feature Analyzer - {self.user_os}")
+        self.setWindowTitle(f"MindLink Feature Analyzer - {self.user_os}")
         try:
             self.setWindowIcon(QIcon(resource_path("assets/favicon.ico")))
         except:
             pass
         
         # Settings (reuse for storing HWID substrings)
-        self.settings = QSettings("BrainLink", "FeatureAnalyzer")
+        self.settings = QSettings("MindLink", "FeatureAnalyzer")
         # Load previously stored allowed HWIDs (comma separated)
         try:
             stored_hwids = self.settings.value("allowed_hwids", "")
@@ -870,18 +1054,46 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.brainlink_thread = None
         self.serial_obj = None
         self.feature_engine = FeatureAnalysisEngine()
+        self._tasks_complete = False
+
+        self._battery_widget = None
+        self._primary_battery_entry = None
+        self.battery_status_label = None
+        self.battery_progress = None
+        self._battery_level: Optional[int] = None
+        self._battery_version = None
+        self._battery_widgets: List[Dict[str, Any]] = []
+        self._pending_battery_update: Optional[tuple] = None
+        self._task_overlay = None
+        self._active_task_dialog = None
+        self._active_task_type = None
+
+        try:
+            self.battery_update.connect(self._apply_battery_update)
+        except Exception:
+            pass
+
+        try:
+            BrainLinkAnalyzerWindow._active_window = weakref.ref(self)
+        except Exception:
+            BrainLinkAnalyzerWindow._active_window = None
         
         self.setMinimumSize(1200, 800)
         self.setup_ui()
         self.setup_timers()
             
-        # Initialize windowed task pipeline session holders
+    # Initialize windowed task pipeline session holders
         self._sessionA_signal = None
         self._sessionA_events = None
         self._sessionB_signal = None
         self._sessionB_events = None
         self._task_pipeline_results_A = None
         self._task_pipeline_results_B = None
+
+        # Auto-stop timer for baseline calibrations
+        self._calibration_timer = QTimer(self)
+        self._calibration_timer.setSingleShot(True)
+        self._calibration_timer.timeout.connect(self._auto_stop_calibration)
         
         # Attempt device detection
         global SERIAL_PORT
@@ -892,12 +1104,12 @@ class BrainLinkAnalyzerWindow(QMainWindow):
                 SERIAL_PORT = detect_brainlink()
         
         if SERIAL_PORT:
-            self.log_message(f"Found BrainLink device: {SERIAL_PORT}")
+            self.log_message(f"Found MindLink device: {SERIAL_PORT}")
             self.auto_connect_brainlink()
         else:
-            self.log_message("ERROR: No BrainLink device found!")
-            self.log_message("If you're on macOS you can click 'Manual Device Setup' to enter a serial substring or descriptor keyword (e.g. part of HWID, VID:PID, or 'brainlink').")
-            self.log_message("CRITICAL: This application requires a real BrainLink device connected.")
+            self.log_message("ERROR: No MindLink device found!")
+            self.log_message("If you're on macOS you can click 'Manual Device Setup' to enter a serial substring or descriptor keyword (e.g. part of HWID, VID:PID, or the legacy 'brainlink' tag).")
+            self.log_message("CRITICAL: This application requires a real MindLink device connected.")
             # Disable functionality until device present
             self.setEnabled(False)
             # Re-enable just the manual setup button (added later in UI build)
@@ -933,8 +1145,8 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         # Connection controls
         conn_group = QGroupBox("Connection")
         conn_layout = QHBoxLayout()
-        
-        self.connect_button = QPushButton("Connect & Login")
+
+        self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.on_connect_clicked)
         conn_layout.addWidget(self.connect_button)
         
@@ -945,7 +1157,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         # Manual device setup button (HWID identifiers)
         self.rescan_button = QPushButton("Manual Device Setup")
-        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for BrainLink detection")
+        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for MindLink detection")
         self.rescan_button.clicked.connect(self.manual_rescan_devices)
         conn_layout.addWidget(self.rescan_button)
         
@@ -962,24 +1174,27 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         plot_group = QGroupBox("Live EEG Signal")
         plot_layout = QVBoxLayout()
         
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#000")
+        self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
         self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
-        self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.setYRange(-200, 200)  # Set initial Y range for EEG
-        self.plot_widget.setXRange(0, 256)     # Set X range for 256 samples
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self.plot_widget.setYRange(-200, 200)
+        self.plot_widget.setXRange(0, 256)
         plot_layout.addWidget(self.plot_widget)
         
-        # Create plot curve with thick green pen for visibility - using cosmetic pen to avoid Qt6 issues
+        # Create plot curve with modern professional colour
         try:
-            pen = pg.mkPen(color='lime', width=3, cosmetic=True)
+            pen = pg.mkPen(color='#1976d2', width=2, cosmetic=True)
         except Exception:
-            pen = pg.mkPen(color='lime', width=3)
+            pen = pg.mkPen(color='#1976d2', width=2)
         
         # Use plot item directly to avoid autoRangeEnabled issues
         plot_item = self.plot_widget.getPlotItem()
+        for axis_name in ('left', 'bottom'):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen('#bdbdbd'))
+            axis.setTextPen(pg.mkPen('#424242'))
         self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
         
         # Disable auto range to avoid Qt6 compatibility issues
@@ -999,7 +1214,9 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.blink_stop_button = QPushButton("Stop Blink Monitor")
         self.blink_stop_button.setEnabled(False)
         self.blink_status = QLabel("Idle")
-        self.blink_status.setStyleSheet("color: #ffffff;")
+        self.blink_status.setStyleSheet(
+            "padding: 4px 10px; border-radius: 6px; background-color: #e3f2fd; color: #0d47a1;"
+        )
         self.blink_start_button.clicked.connect(self.start_blink_monitor)
         self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
         blink_layout.addWidget(self.blink_start_button)
@@ -1011,16 +1228,25 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         # Log area
         log_group = QGroupBox("System Log")
         log_layout = QVBoxLayout()
-        
+
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
+        self.log_area.setMaximumHeight(140)
         log_layout.addWidget(self.log_area)
         
         log_group.setLayout(log_layout)
         layout.addWidget(log_group)
+
+        # Progression control
+        proceed_row = QHBoxLayout()
+        proceed_row.addStretch()
+        self.proceed_to_analysis_button = QPushButton("Proceed to Tasks")
+        self.proceed_to_analysis_button.setEnabled(False)
+        self.proceed_to_analysis_button.clicked.connect(self.handle_proceed_to_analysis)
+        proceed_row.addWidget(self.proceed_to_analysis_button)
+        layout.addLayout(proceed_row)
         
-        self.tabs.addTab(tab, "Connection")
+        self.connection_tab_index = self.tabs.addTab(tab, "Connection")
 
     # ...existing code...
     def manual_enter_port(self):
@@ -1053,11 +1279,11 @@ class BrainLinkAnalyzerWindow(QMainWindow):
 
     # ...existing code...
     def auto_connect_brainlink(self):
-        """Auto-connect to BrainLink device for console output"""
+        """Auto-connect to MindLink device for console output"""
         global SERIAL_PORT, stop_thread_flag
         
         try:
-            self.log_message("Auto-connecting to BrainLink device...")
+            self.log_message("Auto-connecting to MindLink device...")
             
             # Link feature engine to onRaw callback
             onRaw.feature_engine = self.feature_engine
@@ -1068,7 +1294,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             # Reset stop flag
             stop_thread_flag = False
             
-            # Start BrainLink thread
+            # Start MindLink thread
             self.brainlink_thread = threading.Thread(target=run_brainlink, args=(self.serial_obj,))
             self.brainlink_thread.daemon = True
             self.brainlink_thread.start()
@@ -1077,17 +1303,18 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             self.eyes_closed_button.setEnabled(True)
             self.eyes_open_button.setEnabled(True)
             self.task_button.setEnabled(True)
-            self.compute_baseline_button.setEnabled(True)
-            self.analyze_task_button.setEnabled(True)
-            self.generate_report_button.setEnabled(True)
+            self._set_feature_status("Connected", "ready")
+            self._reset_workflow_progress()
+            if hasattr(self, 'proceed_to_analysis_button'):
+                self.proceed_to_analysis_button.setEnabled(True)
             
             # Initialize task preview with the first task
             if self.task_combo.count() > 0:
                 self.update_task_preview(self.task_combo.currentText())
             
-            self.log_message("✓ BrainLink auto-connected! Check console for processed values.")
+            self.log_message("✓ MindLink auto-connected! Check console for processed values.")
             print("\n" + "="*60)
-            print("BRAINLINK ANALYZER STARTED")
+            print("MINDLINK ANALYZER STARTED")
             print("Real-time EEG analysis will appear in console every 50 samples")
             print("="*60)
             
@@ -1100,43 +1327,106 @@ class BrainLinkAnalyzerWindow(QMainWindow):
     def setup_ui(self):
         """Setup the user interface"""
         self.setStyleSheet("""
-            QMainWindow { background:#121416; }
-            QLabel { font-size:12px; color:#d8dce0; }
-            QPushButton { background:#2a82da; color:#fff; border-radius:5px; padding:8px 14px; font-size:12px; border:0; }
-            QPushButton:hover { background:#3793ef; }
-            QPushButton:pressed { background:#1b61a3; }
-            QPushButton:disabled { background:#2f353a; color:#7d848b; }
-            QRadioButton { font-size:12px; color:#c0c5ca; }
-            QGroupBox { margin-top:10px; border:1px solid #2c3136; border-radius:6px; padding:8px 10px 10px 10px; }
-            QLineEdit { font-size:12px; padding:4px 6px; background:#181a1d; color:#f0f3f5; border:1px solid #2c3136; border-radius:4px; }
-            QTextEdit { font-size:12px; background:#181a1d; color:#e6e9ec; border:1px solid #2c3136; border-radius:4px; }
-            QTabWidget::pane { border:1px solid #2c3136; top:-1px; }
-            QTabBar::tab { padding:6px 14px; background:#181a1d; color:#aeb4b9; border-top-left-radius:6px; border-top-right-radius:6px; margin-right:4px; }
-            QTabBar::tab:selected { background:#2a82da; color:#fff; }
-            QTabBar::tab:hover { background:#23272b; }
+            QMainWindow { background:#f5f7fa; }
+            QLabel { font-size:13px; color:#2c3e50; }
+            QPushButton {
+                background-color:#1976d2;
+                color:#ffffff;
+                border-radius:6px;
+                padding:8px 18px;
+                font-size:13px;
+                border:0;
+            }
+            QPushButton:hover { background-color:#1e88e5; }
+            QPushButton:pressed { background-color:#1565c0; }
+            QPushButton:disabled { background-color:#cfd8dc; color:#607d8b; }
+            QRadioButton { font-size:13px; color:#37474f; }
+            QGroupBox {
+                margin-top:12px;
+                border:1px solid #dfe4ea;
+                border-radius:10px;
+                padding:12px 14px 14px 14px;
+                background:#ffffff;
+            }
+            QLineEdit, QComboBox {
+                font-size:13px;
+                padding:6px 8px;
+                background:#ffffff;
+                color:#2c3e50;
+                border:1px solid #cfd8dc;
+                border-radius:6px;
+            }
+            QTextEdit {
+                font-size:13px;
+                background:#ffffff;
+                color:#2c3e50;
+                border:1px solid #cfd8dc;
+                border-radius:8px;
+                padding:8px;
+            }
+            QTabWidget::pane {
+                border:1px solid #dfe4ea;
+                border-radius:10px;
+                background:#ffffff;
+                margin-top:6px;
+            }
+            QTabBar::tab {
+                background:#eef2f5;
+                color:#546e7a;
+                padding:10px 22px;
+                border-top-left-radius:10px;
+                border-top-right-radius:10px;
+                margin-right:4px;
+            }
+            QTabBar::tab:selected {
+                background:#ffffff;
+                color:#1976d2;
+                border:1px solid #dfe4ea;
+                border-bottom-color:#ffffff;
+            }
+            QTabBar::tab:hover { background:#ffffff; color:#1e88e5; }
         """)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
-        # Header
-        header = QLabel("BrainLink Feature Analyzer")
-        header.setAlignment(Qt.AlignCenter)
+        # Header row with battery indicator
+        header_container = QWidget()
+        header_container.setObjectName("HeaderRow")
+        header_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        header_layout = QHBoxLayout(header_container)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+
+        header = QLabel("MindLink Feature Analyzer")
+        header.setAlignment(Qt.AlignLeft)
         header.setStyleSheet("font-size: 20px; font-weight: bold;")
-        main_layout.addWidget(header)
+        header_layout.addWidget(header)
+
+        header_layout.addStretch()
+
+        try:
+            battery_widget = self._build_battery_indicator()
+            header_layout.addWidget(battery_widget, 0, Qt.AlignRight)
+        except Exception:
+            battery_widget = None
+
+        main_layout.addWidget(header_container)
         
         # Tab widget
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         main_layout.addWidget(self.tabs)
-        
-    # Setup tabs
+
+        # Setup primary sections
         self.setup_connection_tab()
         self.setup_analysis_tab()
-        self.setup_results_tab()
-        self.setup_tasks_tab()  # New: windowed task pipeline
-        
-    # Status bar
+        self.setup_tasks_tab()  # Multi-task pipeline
+
+        self.tabs.setCurrentIndex(self.connection_tab_index)
+
+        # Status bar
         self.status_label = QLabel("Ready")
         main_layout.addWidget(self.status_label)
         
@@ -1168,8 +1458,8 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         # Connection controls
         conn_group = QGroupBox("Connection")
         conn_layout = QHBoxLayout()
-        
-        self.connect_button = QPushButton("Connect & Login")
+
+        self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.on_connect_clicked)
         conn_layout.addWidget(self.connect_button)
         
@@ -1180,7 +1470,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         # Manual device setup button (HWID identifiers)
         self.rescan_button = QPushButton("Manual Device Setup")
-        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for BrainLink detection")
+        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for MindLink detection")
         self.rescan_button.clicked.connect(self.manual_rescan_devices)
         conn_layout.addWidget(self.rescan_button)
         
@@ -1197,24 +1487,27 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         plot_group = QGroupBox("Live EEG Signal")
         plot_layout = QVBoxLayout()
         
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#000")
+        self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
         self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
-        self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.setYRange(-200, 200)  # Set initial Y range for EEG
-        self.plot_widget.setXRange(0, 256)     # Set X range for 256 samples
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self.plot_widget.setYRange(-200, 200)
+        self.plot_widget.setXRange(0, 256)
         plot_layout.addWidget(self.plot_widget)
         
-        # Create plot curve with thick green pen for visibility - using cosmetic pen to avoid Qt6 issues
+        # Create plot curve with modern professional colour
         try:
-            pen = pg.mkPen(color='lime', width=3, cosmetic=True)
+            pen = pg.mkPen(color='#1976d2', width=2, cosmetic=True)
         except Exception:
-            pen = pg.mkPen(color='lime', width=3)
+            pen = pg.mkPen(color='#1976d2', width=2)
         
         # Use plot item directly to avoid autoRangeEnabled issues
         plot_item = self.plot_widget.getPlotItem()
+        for axis_name in ('left', 'bottom'):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen('#bdbdbd'))
+            axis.setTextPen(pg.mkPen('#424242'))
         self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
         
         # Disable auto range to avoid Qt6 compatibility issues
@@ -1234,7 +1527,9 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.blink_stop_button = QPushButton("Stop Blink Monitor")
         self.blink_stop_button.setEnabled(False)
         self.blink_status = QLabel("Idle")
-        self.blink_status.setStyleSheet("color: #ffffff;")
+        self.blink_status.setStyleSheet(
+            "padding: 4px 10px; border-radius: 6px; background-color: #e3f2fd; color: #0d47a1;"
+        )
         self.blink_start_button.clicked.connect(self.start_blink_monitor)
         self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
         blink_layout.addWidget(self.blink_start_button)
@@ -1249,7 +1544,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
+        self.log_area.setMaximumHeight(140)
         log_layout.addWidget(self.log_area)
         
         log_group.setLayout(log_layout)
@@ -1288,11 +1583,11 @@ class BrainLinkAnalyzerWindow(QMainWindow):
 
     # ...existing code...
     def auto_connect_brainlink(self):
-        """Auto-connect to BrainLink device for console output"""
+        """Auto-connect to MindLink device for console output"""
         global SERIAL_PORT, stop_thread_flag
         
         try:
-            self.log_message("Auto-connecting to BrainLink device...")
+            self.log_message("Auto-connecting to MindLink device...")
             
             # Link feature engine to onRaw callback
             onRaw.feature_engine = self.feature_engine
@@ -1303,7 +1598,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             # Reset stop flag
             stop_thread_flag = False
             
-            # Start BrainLink thread
+            # Start MindLink thread
             self.brainlink_thread = threading.Thread(target=run_brainlink, args=(self.serial_obj,))
             self.brainlink_thread.daemon = True
             self.brainlink_thread.start()
@@ -1312,17 +1607,15 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             self.eyes_closed_button.setEnabled(True)
             self.eyes_open_button.setEnabled(True)
             self.task_button.setEnabled(True)
-            self.compute_baseline_button.setEnabled(True)
-            self.analyze_task_button.setEnabled(True)
-            self.generate_report_button.setEnabled(True)
+            self._set_feature_status("Connected", "ready")
             
             # Initialize task preview with the first task
             if self.task_combo.count() > 0:
                 self.update_task_preview(self.task_combo.currentText())
             
-            self.log_message("✓ BrainLink auto-connected! Check console for processed values.")
+            self.log_message("✓ MindLink auto-connected! Check console for processed values.")
             print("\n" + "="*60)
-            print("BRAINLINK ANALYZER STARTED")
+            print("MINDLINK ANALYZER STARTED")
             print("Real-time EEG analysis will appear in console every 50 samples")
             print("="*60)
             
@@ -1335,51 +1628,443 @@ class BrainLinkAnalyzerWindow(QMainWindow):
     def setup_ui(self):
         """Setup the user interface"""
         self.setStyleSheet("""
-            QMainWindow { background: #7878e9; }
-            QLabel { font-size: 12px; }
+            QMainWindow { background:#f5f7fb; }
+            QLabel { font-size:13px; color:#1f2933; }
             QPushButton {
-                background-color: #0A00FF;
-                color: white;
-                border-radius: 5px;
-                padding: 8px;
+                background-color:#2563eb;
+                color:#ffffff;
+                border-radius:8px;
+                padding:10px 18px;
+                font-size:13px;
+                font-weight:600;
+            }
+            QPushButton:disabled {
+                background-color:#d1d5db;
+                color:#6b7280;
+            }
+            QRadioButton { font-size:13px; color:#374151; }
+            QGroupBox {
+                margin-top:12px;
+                border:1px solid #e5e7eb;
+                border-radius:12px;
+                padding:16px;
+                background:#ffffff;
+            }
+            QLineEdit, QComboBox {
+                font-size:13px;
+                padding:8px 10px;
+                background:#ffffff;
+                color:#111827;
+                border:1px solid #d1d5db;
+                border-radius:8px;
+            }
+            QTextEdit {
+                font-size:13px;
+                background:#ffffff;
+                color:#111827;
+                border:1px solid #d1d5db;
+                border-radius:12px;
+                padding:12px;
+            }
+            QTabWidget::pane {
+                border:1px solid #e5e7eb;
+                border-radius:12px;
+                background:#ffffff;
+                margin-top:8px;
+            }
+            QTabBar::tab {
+                background:#eef2ff;
+                color:#3b82f6;
+                padding:10px 24px;
+                border-top-left-radius:10px;
+                border-top-right-radius:10px;
+                margin-right:6px;
+            }
+            QTabBar::tab:selected {
+                background:#ffffff;
+                color:#1d4ed8;
+                border:1px solid #dbe2ff;
+                border-bottom-color:#ffffff;
+            }
+            QTabBar::tab:hover {
+                background:#ffffff;
+                color:#2563eb;
+            }
+        """)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(18)
+
+        header_container = QWidget()
+        header_container.setObjectName("HeaderRow")
+        header_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        header_layout = QHBoxLayout(header_container)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+
+        header = QLabel("MindLink Feature Analyzer")
+        header.setAlignment(Qt.AlignLeft)
+        header.setStyleSheet("font-size:22px; font-weight:700; letter-spacing:0.5px;")
+        header_layout.addWidget(header)
+
+        header_layout.addStretch()
+
+        try:
+            battery_widget = self._build_battery_indicator()
+            header_layout.addWidget(battery_widget, 0, Qt.AlignRight)
+        except Exception:
+            battery_widget = None
+
+        main_layout.addWidget(header_container)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(False)
+        main_layout.addWidget(self.tabs)
+
+        self.setup_connection_tab()
+        self.setup_analysis_tab()
+        self.setup_tasks_tab()
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color:#475569; font-size:12px;")
+        main_layout.addWidget(self.status_label)
+        
+    def setup_connection_tab(self):
+        """Setup connection and authentication tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Environment selection
+        env_group = QGroupBox("Environment")
+        env_layout = QHBoxLayout()
+        
+        self.env_group = QButtonGroup(self)
+        self.radio_en = QRadioButton("EN (Production)")
+        self.radio_nl = QRadioButton("NL (Production)")
+        self.radio_local = QRadioButton("Local (127.0.0.1:5000)")
+        self.radio_en.setChecked(True)
+        
+        self.env_group.addButton(self.radio_en)
+        self.env_group.addButton(self.radio_nl)
+        self.env_group.addButton(self.radio_local)
+        
+        env_layout.addWidget(self.radio_en)
+        env_layout.addWidget(self.radio_nl)
+        env_layout.addWidget(self.radio_local)
+        env_group.setLayout(env_layout)
+        layout.addWidget(env_group)
+        
+        # Connection controls
+        conn_group = QGroupBox("Connection")
+        conn_layout = QHBoxLayout()
+
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.clicked.connect(self.on_connect_clicked)
+        conn_layout.addWidget(self.connect_button)
+        
+        self.disconnect_button = QPushButton("Disconnect")
+        self.disconnect_button.clicked.connect(self.on_disconnect_clicked)
+        self.disconnect_button.setEnabled(False)
+        conn_layout.addWidget(self.disconnect_button)
+        
+        # Manual device setup button (HWID identifiers)
+        self.rescan_button = QPushButton("Manual Device Setup")
+        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for MindLink detection")
+        self.rescan_button.clicked.connect(self.manual_rescan_devices)
+        conn_layout.addWidget(self.rescan_button)
+        
+        # New: Manual port entry (direct /dev/tty.* or COMx)
+        self.manual_port_button = QPushButton("Enter Port")
+        self.manual_port_button.setToolTip("Directly specify device path (e.g. /dev/tty.usbserial-XXXX or COM5)")
+        self.manual_port_button.clicked.connect(self.manual_enter_port)
+        conn_layout.addWidget(self.manual_port_button)
+        
+        conn_group.setLayout(conn_layout)
+        layout.addWidget(conn_group)
+        
+        # Live EEG plot
+        plot_group = QGroupBox("Live EEG Signal")
+        plot_layout = QVBoxLayout()
+        
+        self.plot_widget = pg.PlotWidget(background="#ffffff")
+        self.plot_widget.setLabel('left', 'Amplitude (µV)')
+        self.plot_widget.setLabel('bottom', 'Sample Index')
+        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self.plot_widget.setYRange(-200, 200)
+        self.plot_widget.setXRange(0, 256)
+        plot_layout.addWidget(self.plot_widget)
+        
+        # Create plot curve with modern professional colour
+        try:
+            pen = pg.mkPen(color='#1976d2', width=2, cosmetic=True)
+        except Exception:
+            pen = pg.mkPen(color='#1976d2', width=2)
+        
+        # Use plot item directly to avoid autoRangeEnabled issues
+        plot_item = self.plot_widget.getPlotItem()
+        for axis_name in ('left', 'bottom'):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen('#bdbdbd'))
+            axis.setTextPen(pg.mkPen('#424242'))
+        self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
+        
+        # Disable auto range to avoid Qt6 compatibility issues
+        try:
+            plot_item.enableAutoRange('x', False)
+            plot_item.enableAutoRange('y', False)
+        except Exception:
+            pass
+        
+        plot_group.setLayout(plot_layout)
+        layout.addWidget(plot_group)
+
+        # Blink detection controls (runtime diagnostic only)
+        blink_group = QGroupBox("Blink Detection (diagnostic)")
+        blink_layout = QHBoxLayout()
+        self.blink_start_button = QPushButton("Start Blink Monitor")
+        self.blink_stop_button = QPushButton("Stop Blink Monitor")
+        self.blink_stop_button.setEnabled(False)
+        self.blink_status = QLabel("Idle")
+        self.blink_status.setStyleSheet(
+            "padding: 4px 10px; border-radius: 6px; background-color: #e3f2fd; color: #0d47a1;"
+        )
+        self.blink_start_button.clicked.connect(self.start_blink_monitor)
+        self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
+        blink_layout.addWidget(self.blink_start_button)
+        blink_layout.addWidget(self.blink_stop_button)
+        blink_layout.addWidget(self.blink_status)
+        blink_group.setLayout(blink_layout)
+        layout.addWidget(blink_group)
+        
+        # Log area
+        log_group = QGroupBox("System Log")
+        log_layout = QVBoxLayout()
+        
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setMaximumHeight(140)
+        log_layout.addWidget(self.log_area)
+        
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
+        
+        self.tabs.addTab(tab, "Connection")
+
+    # ...existing code...
+    def manual_enter_port(self):
+        """Prompt user for explicit serial port (Windows COMx or macOS /dev/tty.*)."""
+        global SERIAL_PORT
+        if self.serial_obj and self.serial_obj.is_open:
+            QMessageBox.warning(self, "Already Connected", "Disconnect before changing the port.")
+            return
+        suggested = SERIAL_PORT if SERIAL_PORT else ("COM5" if platform.system() == 'Windows' else "/dev/tty.usbserial-")
+        port_text, ok = QInputDialog.getText(self, "Enter Serial Port", "Enter port name/path:", QLineEdit.Normal, suggested)
+        if not ok or not port_text.strip():
+            return
+        port_text = port_text.strip()
+        # Basic validation
+        if platform.system() == 'Windows':
+            if not port_text.upper().startswith('COM'):
+                QMessageBox.warning(self, "Invalid Port", "Windows ports must start with COM (e.g. COM5).")
+                return
+        else:
+            if not port_text.startswith('/dev/'):
+                QMessageBox.warning(self, "Invalid Path", "macOS/Linux ports usually start with /dev/ (e.g. /dev/tty.usbserial-XXXX).")
+                return
+        SERIAL_PORT = port_text
+        self.log_message(f"User specified port: {SERIAL_PORT}")
+        # Attempt connection without disabling UI if fails
+        try:
+            self.auto_connect_brainlink()
+        except Exception as e:
+            self.log_message(f"Manual connect failed: {e}")
+
+    # ...existing code...
+    def auto_connect_brainlink(self):
+        """Auto-connect to MindLink device for console output"""
+        global SERIAL_PORT, stop_thread_flag
+        
+        try:
+            self.log_message("Auto-connecting to MindLink device...")
+            
+            # Link feature engine to onRaw callback
+            onRaw.feature_engine = self.feature_engine
+            
+            # Create serial object
+            self.serial_obj = CushySerial(SERIAL_PORT, SERIAL_BAUD)
+            
+            # Reset stop flag
+            stop_thread_flag = False
+            
+            # Start MindLink thread
+            self.brainlink_thread = threading.Thread(target=run_brainlink, args=(self.serial_obj,))
+            self.brainlink_thread.daemon = True
+            self.brainlink_thread.start()
+            
+            # Enable calibration buttons for immediate testing
+            self.eyes_closed_button.setEnabled(True)
+            self.eyes_open_button.setEnabled(True)
+            self.task_button.setEnabled(True)
+            self._set_feature_status("Connected", "ready")
+            
+            # Initialize task preview with the first task
+            if self.task_combo.count() > 0:
+                self.update_task_preview(self.task_combo.currentText())
+            
+            self.log_message("✓ MindLink auto-connected! Check console for processed values.")
+            print("\n" + "="*60)
+            print("MINDLINK ANALYZER STARTED")
+            print("Real-time EEG analysis will appear in console every 50 samples")
+            print("="*60)
+            
+        except Exception as e:
+            self.log_message(f"Auto-connect failed: {e}")
+            print(f"Auto-connect error: {e}")
+            # Enable manual connection
+            self.connect_button.setEnabled(True)
+    
+    def setup_ui(self):
+        """Setup the user interface"""
+        self.setStyleSheet("""
+            QWidget {
+                color: #1f2937;
+                background: #f9fafb;
                 font-size: 12px;
             }
-            QPushButton:disabled { background-color: #a0a0a0; }
-            QRadioButton { font-size: 12px; }
-            QGroupBox {
-                margin-top: 10px;
-                border: 1px solid #a0a0a0;
-                border-radius: 5px;
-                padding: 5px;
+            QMainWindow {
+                background: #f3f4f6;
             }
-            QLineEdit { font-size: 12px; padding: 4px; }
-            QTextEdit { font-size: 12px; }
-            QTabWidget::pane { border: 1px solid #a0a0a0; }
-            QTabBar::tab { padding: 8px; }
+            QLabel#AppTitle {
+                font-size: 22px;
+                font-weight: 600;
+                color: #0f172a;
+            }
+            QLabel {
+                font-size: 12px;
+            }
+            QPushButton {
+                background-color: #1d4ed8;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #1e40af;
+            }
+            QPushButton:pressed {
+                background-color: #1e3a8a;
+            }
+            QPushButton:disabled {
+                background-color: #cbd5f5;
+                color: #64748b;
+            }
+            QRadioButton {
+                font-size: 12px;
+            }
+            QGroupBox {
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                margin-top: 12px;
+                padding: 14px;
+                background: #ffffff;
+            }
+            QLineEdit, QTextEdit {
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 8px;
+                background: #ffffff;
+            }
+            QComboBox {
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 8px 36px 8px 10px;
+                background: #ffffff;
+                color: #1f2937;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 32px;
+                border-left: 1px solid #dbe0e6;
+                background-color: #eef2f8;
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }
+            QComboBox::down-arrow {
+                width: 0;
+                height: 0;
+                margin-right: 10px;
+                border-left: 6px solid transparent;
+                border-right: 6px solid transparent;
+                border-top: 8px solid #1d4ed8;
+            }
+            QComboBox::down-arrow:on {
+                border-top-color: #1e3a8a;
+            }
+            QTextEdit {
+                line-height: 1.4;
+            }
+            QTabWidget::pane {
+                border: none;
+            }
+            QTabBar::tab {
+                padding: 10px 16px;
+                border: none;
+                margin-right: 6px;
+                border-radius: 10px 10px 0 0;
+                background: #e5e7eb;
+                color: #334155;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #111827;
+            }
+            QScrollBar:vertical {
+                width: 10px;
+                background: #e5e7eb;
+                margin: 0px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #94a3b8;
+                min-height: 30px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0;
+            }
         """)
-        
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        
-        # Header
-        header = QLabel("BrainLink Feature Analyzer")
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(20)
+
+        header = QLabel("MindLink Feature Analyzer")
+        header.setObjectName("AppTitle")
         header.setAlignment(Qt.AlignCenter)
-        header.setStyleSheet("font-size: 20px; font-weight: bold;")
         main_layout.addWidget(header)
-        
-        # Tab widget
+
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabBarAutoHide(False)
         main_layout.addWidget(self.tabs)
-        
-    # Setup tabs
+
         self.setup_connection_tab()
         self.setup_analysis_tab()
-        self.setup_results_tab()
-        self.setup_tasks_tab()  # New: windowed task pipeline
-        
-    # Status bar
+        self.setup_tasks_tab()
+
         self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color:#475569; font-weight:500;")
         main_layout.addWidget(self.status_label)
         
     def setup_connection_tab(self):
@@ -1410,8 +2095,8 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         # Connection controls
         conn_group = QGroupBox("Connection")
         conn_layout = QHBoxLayout()
-        
-        self.connect_button = QPushButton("Connect & Login")
+
+        self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.on_connect_clicked)
         conn_layout.addWidget(self.connect_button)
         
@@ -1422,7 +2107,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         # Manual device setup button (HWID identifiers)
         self.rescan_button = QPushButton("Manual Device Setup")
-        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for BrainLink detection")
+        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for MindLink detection")
         self.rescan_button.clicked.connect(self.manual_rescan_devices)
         conn_layout.addWidget(self.rescan_button)
         
@@ -1439,24 +2124,27 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         plot_group = QGroupBox("Live EEG Signal")
         plot_layout = QVBoxLayout()
         
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#000")
+        self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
         self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
-        self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.setYRange(-200, 200)  # Set initial Y range for EEG
-        self.plot_widget.setXRange(0, 256)     # Set X range for 256 samples
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self.plot_widget.setYRange(-200, 200)
+        self.plot_widget.setXRange(0, 256)
         plot_layout.addWidget(self.plot_widget)
         
-        # Create plot curve with thick green pen for visibility - using cosmetic pen to avoid Qt6 issues
+        # Create plot curve with modern professional colour
         try:
-            pen = pg.mkPen(color='lime', width=3, cosmetic=True)
+            pen = pg.mkPen(color='#1976d2', width=2, cosmetic=True)
         except Exception:
-            pen = pg.mkPen(color='lime', width=3)
+            pen = pg.mkPen(color='#1976d2', width=2)
         
         # Use plot item directly to avoid autoRangeEnabled issues
         plot_item = self.plot_widget.getPlotItem()
+        for axis_name in ('left', 'bottom'):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen('#bdbdbd'))
+            axis.setTextPen(pg.mkPen('#424242'))
         self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
         
         # Disable auto range to avoid Qt6 compatibility issues
@@ -1476,7 +2164,9 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.blink_stop_button = QPushButton("Stop Blink Monitor")
         self.blink_stop_button.setEnabled(False)
         self.blink_status = QLabel("Idle")
-        self.blink_status.setStyleSheet("color: #ffffff;")
+        self.blink_status.setStyleSheet(
+            "padding: 4px 10px; border-radius: 6px; background-color: #e3f2fd; color: #0d47a1;"
+        )
         self.blink_start_button.clicked.connect(self.start_blink_monitor)
         self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
         blink_layout.addWidget(self.blink_start_button)
@@ -1491,7 +2181,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
+        self.log_area.setMaximumHeight(140)
         log_layout.addWidget(self.log_area)
         
         log_group.setLayout(log_layout)
@@ -1530,11 +2220,11 @@ class BrainLinkAnalyzerWindow(QMainWindow):
 
     # ...existing code...
     def auto_connect_brainlink(self):
-        """Auto-connect to BrainLink device for console output"""
+        """Auto-connect to MindLink device for console output"""
         global SERIAL_PORT, stop_thread_flag
         
         try:
-            self.log_message("Auto-connecting to BrainLink device...")
+            self.log_message("Auto-connecting to MindLink device...")
             
             # Link feature engine to onRaw callback
             onRaw.feature_engine = self.feature_engine
@@ -1545,26 +2235,23 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             # Reset stop flag
             stop_thread_flag = False
             
-            # Start BrainLink thread
+            # Start MindLink thread
             self.brainlink_thread = threading.Thread(target=run_brainlink, args=(self.serial_obj,))
             self.brainlink_thread.daemon = True
             self.brainlink_thread.start()
             
-            # Enable calibration buttons for immediate testing
+            # Enable calibration controls for immediate use
             self.eyes_closed_button.setEnabled(True)
             self.eyes_open_button.setEnabled(True)
             self.task_button.setEnabled(True)
-            self.compute_baseline_button.setEnabled(True)
-            self.analyze_task_button.setEnabled(True)
-            self.generate_report_button.setEnabled(True)
-            
-            # Initialize task preview with the first task
+            self._set_feature_status("Connected", "ready")
+
             if self.task_combo.count() > 0:
                 self.update_task_preview(self.task_combo.currentText())
-            
-            self.log_message("✓ BrainLink auto-connected! Check console for processed values.")
+
+            self.log_message("✓ MindLink auto-connected! Check console for processed values.")
             print("\n" + "="*60)
-            print("BRAINLINK ANALYZER STARTED")
+            print("MINDLINK ANALYZER STARTED")
             print("Real-time EEG analysis will appear in console every 50 samples")
             print("="*60)
             
@@ -1577,51 +2264,114 @@ class BrainLinkAnalyzerWindow(QMainWindow):
     def setup_ui(self):
         """Setup the user interface"""
         self.setStyleSheet("""
-            QMainWindow { background: #7878e9; }
-            QLabel { font-size: 12px; }
-            QPushButton {
-                background-color: #0A00FF;
-                color: white;
-                border-radius: 5px;
-                padding: 8px;
+            QWidget {
+                color: #1f2937;
+                background: #f9fafb;
                 font-size: 12px;
             }
-            QPushButton:disabled { background-color: #a0a0a0; }
-            QRadioButton { font-size: 12px; }
-            QGroupBox {
-                margin-top: 10px;
-                border: 1px solid #a0a0a0;
-                border-radius: 5px;
-                padding: 5px;
+            QMainWindow {
+                background: #f3f4f6;
             }
-            QLineEdit { font-size: 12px; padding: 4px; }
-            QTextEdit { font-size: 12px; }
-            QTabWidget::pane { border: 1px solid #a0a0a0; }
-            QTabBar::tab { padding: 8px; }
+            QLabel#AppTitle {
+                font-size: 22px;
+                font-weight: 600;
+                color: #0f172a;
+            }
+            QLabel {
+                font-size: 12px;
+            }
+            QPushButton {
+                background-color: #1d4ed8;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #1e40af;
+            }
+            QPushButton:pressed {
+                background-color: #1e3a8a;
+            }
+            QPushButton:disabled {
+                background-color: #cbd5f5;
+                color: #64748b;
+            }
+            QRadioButton {
+                font-size: 12px;
+            }
+            QGroupBox {
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                margin-top: 12px;
+                padding: 14px;
+                background: #ffffff;
+            }
+            QLineEdit, QComboBox, QTextEdit {
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 8px;
+                background: #ffffff;
+            }
+            QTextEdit {
+                line-height: 1.4;
+            }
+            QTabWidget::pane {
+                border: none;
+            }
+            QTabBar::tab {
+                padding: 10px 16px;
+                border: none;
+                margin-right: 6px;
+                border-radius: 10px 10px 0 0;
+                background: #e5e7eb;
+                color: #334155;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #111827;
+            }
+            QScrollBar:vertical {
+                width: 10px;
+                background: #e5e7eb;
+                margin: 0px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #94a3b8;
+                min-height: 30px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0;
+            }
         """)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(20)
         
-        # Header
-        header = QLabel("BrainLink Feature Analyzer")
+        header = QLabel("MindLink Feature Analyzer")
+        header.setObjectName("AppTitle")
         header.setAlignment(Qt.AlignCenter)
-        header.setStyleSheet("font-size: 20px; font-weight: bold;")
         main_layout.addWidget(header)
         
-        # Tab widget
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabBarAutoHide(False)
         main_layout.addWidget(self.tabs)
         
-    # Setup tabs
         self.setup_connection_tab()
         self.setup_analysis_tab()
-        self.setup_results_tab()
-        self.setup_tasks_tab()  # New: windowed task pipeline
+        self.setup_tasks_tab()
         
-    # Status bar
         self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color:#475569; font-weight:500;")
         main_layout.addWidget(self.status_label)
         
     def setup_connection_tab(self):
@@ -1653,7 +2403,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         conn_group = QGroupBox("Connection")
         conn_layout = QHBoxLayout()
         
-        self.connect_button = QPushButton("Connect & Login")
+        self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.on_connect_clicked)
         conn_layout.addWidget(self.connect_button)
         
@@ -1664,7 +2414,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         # Manual device setup button (HWID identifiers)
         self.rescan_button = QPushButton("Manual Device Setup")
-        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for BrainLink detection")
+        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for MindLink detection")
         self.rescan_button.clicked.connect(self.manual_rescan_devices)
         conn_layout.addWidget(self.rescan_button)
         
@@ -1681,24 +2431,27 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         plot_group = QGroupBox("Live EEG Signal")
         plot_layout = QVBoxLayout()
         
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#000")
+        self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
         self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
-        self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.setYRange(-200, 200)  # Set initial Y range for EEG
-        self.plot_widget.setXRange(0, 256)     # Set X range for 256 samples
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self.plot_widget.setYRange(-200, 200)
+        self.plot_widget.setXRange(0, 256)
         plot_layout.addWidget(self.plot_widget)
         
-        # Create plot curve with thick green pen for visibility - using cosmetic pen to avoid Qt6 issues
+        # Create plot curve with modern professional colour
         try:
-            pen = pg.mkPen(color='lime', width=3, cosmetic=True)
+            pen = pg.mkPen(color='#1976d2', width=2, cosmetic=True)
         except Exception:
-            pen = pg.mkPen(color='lime', width=3)
-        
+            pen = pg.mkPen(color='#1976d2', width=2)
+
         # Use plot item directly to avoid autoRangeEnabled issues
         plot_item = self.plot_widget.getPlotItem()
+        for axis_name in ('left', 'bottom'):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen('#bdbdbd'))
+            axis.setTextPen(pg.mkPen('#424242'))
         self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
         
         # Disable auto range to avoid Qt6 compatibility issues
@@ -1718,7 +2471,9 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.blink_stop_button = QPushButton("Stop Blink Monitor")
         self.blink_stop_button.setEnabled(False)
         self.blink_status = QLabel("Idle")
-        self.blink_status.setStyleSheet("color: #ffffff;")
+        self.blink_status.setStyleSheet(
+            "padding: 4px 10px; border-radius: 6px; background-color: #e3f2fd; color: #0d47a1;"
+        )
         self.blink_start_button.clicked.connect(self.start_blink_monitor)
         self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
         blink_layout.addWidget(self.blink_start_button)
@@ -1733,249 +2488,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
-        log_layout.addWidget(self.log_area)
-        
-        log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
-        
-        self.tabs.addTab(tab, "Connection")
-
-    # ...existing code...
-    def manual_enter_port(self):
-        """Prompt user for explicit serial port (Windows COMx or macOS /dev/tty.*)."""
-        global SERIAL_PORT
-        if self.serial_obj and self.serial_obj.is_open:
-            QMessageBox.warning(self, "Already Connected", "Disconnect before changing the port.")
-            return
-        suggested = SERIAL_PORT if SERIAL_PORT else ("COM5" if platform.system() == 'Windows' else "/dev/tty.usbserial-")
-        port_text, ok = QInputDialog.getText(self, "Enter Serial Port", "Enter port name/path:", QLineEdit.Normal, suggested)
-        if not ok or not port_text.strip():
-            return
-        port_text = port_text.strip()
-        # Basic validation
-        if platform.system() == 'Windows':
-            if not port_text.upper().startswith('COM'):
-                QMessageBox.warning(self, "Invalid Port", "Windows ports must start with COM (e.g. COM5).")
-                return
-        else:
-            if not port_text.startswith('/dev/'):
-                QMessageBox.warning(self, "Invalid Path", "macOS/Linux ports usually start with /dev/ (e.g. /dev/tty.usbserial-XXXX).")
-                return
-        SERIAL_PORT = port_text
-        self.log_message(f"User specified port: {SERIAL_PORT}")
-        # Attempt connection without disabling UI if fails
-        try:
-            self.auto_connect_brainlink()
-        except Exception as e:
-            self.log_message(f"Manual connect failed: {e}")
-
-    # ...existing code...
-    def auto_connect_brainlink(self):
-        """Auto-connect to BrainLink device for console output"""
-        global SERIAL_PORT, stop_thread_flag
-        
-        try:
-            self.log_message("Auto-connecting to BrainLink device...")
-            
-            # Link feature engine to onRaw callback
-            onRaw.feature_engine = self.feature_engine
-            
-            # Create serial object
-            self.serial_obj = CushySerial(SERIAL_PORT, SERIAL_BAUD)
-            
-            # Reset stop flag
-            stop_thread_flag = False
-            
-            # Start BrainLink thread
-            self.brainlink_thread = threading.Thread(target=run_brainlink, args=(self.serial_obj,))
-            self.brainlink_thread.daemon = True
-            self.brainlink_thread.start()
-            
-            # Enable calibration buttons for immediate testing
-            self.eyes_closed_button.setEnabled(True)
-            self.eyes_open_button.setEnabled(True)
-            self.task_button.setEnabled(True)
-            self.compute_baseline_button.setEnabled(True)
-            self.analyze_task_button.setEnabled(True)
-            self.generate_report_button.setEnabled(True)
-            
-            # Initialize task preview with the first task
-            if self.task_combo.count() > 0:
-                self.update_task_preview(self.task_combo.currentText())
-            
-            self.log_message("✓ BrainLink auto-connected! Check console for processed values.")
-            print("\n" + "="*60)
-            print("BRAINLINK ANALYZER STARTED")
-            print("Real-time EEG analysis will appear in console every 50 samples")
-            print("="*60)
-            
-        except Exception as e:
-            self.log_message(f"Auto-connect failed: {e}")
-            print(f"Auto-connect error: {e}")
-            # Enable manual connection
-            self.connect_button.setEnabled(True)
-    
-    def setup_ui(self):
-        """Setup the user interface"""
-        self.setStyleSheet("""
-            QMainWindow { background: #7878e9; }
-            QLabel { font-size: 12px; }
-            QPushButton {
-                background-color: #0A00FF;
-                color: white;
-                border-radius: 5px;
-                padding: 8px;
-                font-size: 12px;
-            }
-            QPushButton:disabled { background-color: #a0a0a0; }
-            QRadioButton { font-size: 12px; }
-            QGroupBox {
-                margin-top: 10px;
-                border: 1px solid #a0a0a0;
-                border-radius: 5px;
-                padding: 5px;
-            }
-            QLineEdit { font-size: 12px; padding: 4px; }
-            QTextEdit { font-size: 12px; }
-            QTabWidget::pane { border: 1px solid #a0a0a0; }
-            QTabBar::tab { padding: 8px; }
-        """)
-        
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-        
-        # Header
-        header = QLabel("BrainLink Feature Analyzer")
-        header.setAlignment(Qt.AlignCenter)
-        header.setStyleSheet("font-size: 20px; font-weight: bold;")
-        main_layout.addWidget(header)
-        
-        # Tab widget
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
-        
-    # Setup tabs
-        self.setup_connection_tab()
-        self.setup_analysis_tab()
-        self.setup_results_tab()
-        self.setup_tasks_tab()  # New: windowed task pipeline
-        
-    # Status bar
-        self.status_label = QLabel("Ready")
-        main_layout.addWidget(self.status_label)
-        
-    def setup_connection_tab(self):
-        """Setup connection and authentication tab"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Environment selection
-        env_group = QGroupBox("Environment")
-        env_layout = QHBoxLayout()
-        
-        self.env_group = QButtonGroup(self)
-        self.radio_en = QRadioButton("EN (Production)")
-        self.radio_nl = QRadioButton("NL (Production)")
-        self.radio_local = QRadioButton("Local (127.0.0.1:5000)")
-        self.radio_en.setChecked(True)
-        
-        self.env_group.addButton(self.radio_en)
-        self.env_group.addButton(self.radio_nl)
-        self.env_group.addButton(self.radio_local)
-        
-        env_layout.addWidget(self.radio_en)
-        env_layout.addWidget(self.radio_nl)
-        env_layout.addWidget(self.radio_local)
-        env_group.setLayout(env_layout)
-        layout.addWidget(env_group)
-        
-        # Connection controls
-        conn_group = QGroupBox("Connection")
-        conn_layout = QHBoxLayout()
-        
-        self.connect_button = QPushButton("Connect & Login")
-        self.connect_button.clicked.connect(self.on_connect_clicked)
-        conn_layout.addWidget(self.connect_button)
-        
-        self.disconnect_button = QPushButton("Disconnect")
-        self.disconnect_button.clicked.connect(self.on_disconnect_clicked)
-        self.disconnect_button.setEnabled(False)
-        conn_layout.addWidget(self.disconnect_button)
-        
-        # Manual device setup button (HWID identifiers)
-        self.rescan_button = QPushButton("Manual Device Setup")
-        self.rescan_button.setToolTip("Enter HWID / serial / descriptor keywords for BrainLink detection")
-        self.rescan_button.clicked.connect(self.manual_rescan_devices)
-        conn_layout.addWidget(self.rescan_button)
-        
-        # New: Manual port entry (direct /dev/tty.* or COMx)
-        self.manual_port_button = QPushButton("Enter Port")
-        self.manual_port_button.setToolTip("Directly specify device path (e.g. /dev/tty.usbserial-XXXX or COM5)")
-        self.manual_port_button.clicked.connect(self.manual_enter_port)
-        conn_layout.addWidget(self.manual_port_button)
-        
-        conn_group.setLayout(conn_layout)
-        layout.addWidget(conn_group)
-        
-        # Live EEG plot
-        plot_group = QGroupBox("Live EEG Signal")
-        plot_layout = QVBoxLayout()
-        
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#000")
-        self.plot_widget.setLabel('left', 'Amplitude (µV)')
-        self.plot_widget.setLabel('bottom', 'Sample Index')
-        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
-        self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.setYRange(-200, 200)  # Set initial Y range for EEG
-        self.plot_widget.setXRange(0, 256)     # Set X range for 256 samples
-        plot_layout.addWidget(self.plot_widget)
-        
-        # Create plot curve with thick green pen for visibility - using cosmetic pen to avoid Qt6 issues
-        try:
-            pen = pg.mkPen(color='lime', width=3, cosmetic=True)
-        except Exception:
-            pen = pg.mkPen(color='lime', width=3)
-        
-        # Use plot item directly to avoid autoRangeEnabled issues
-        plot_item = self.plot_widget.getPlotItem()
-        self.live_curve = plot_item.plot([], [], pen=pen, symbol=None)
-        
-        # Disable auto range to avoid Qt6 compatibility issues
-        try:
-            plot_item.enableAutoRange('x', False)
-            plot_item.enableAutoRange('y', False)
-        except Exception:
-            pass
-        
-        plot_group.setLayout(plot_layout)
-        layout.addWidget(plot_group)
-
-        # Blink detection controls (runtime diagnostic only)
-        blink_group = QGroupBox("Blink Detection (diagnostic)")
-        blink_layout = QHBoxLayout()
-        self.blink_start_button = QPushButton("Start Blink Monitor")
-        self.blink_stop_button = QPushButton("Stop Blink Monitor")
-        self.blink_stop_button.setEnabled(False)
-        self.blink_status = QLabel("Idle")
-        self.blink_status.setStyleSheet("color: #ffffff;")
-        self.blink_start_button.clicked.connect(self.start_blink_monitor)
-        self.blink_stop_button.clicked.connect(self.stop_blink_monitor)
-        blink_layout.addWidget(self.blink_start_button)
-        blink_layout.addWidget(self.blink_stop_button)
-        blink_layout.addWidget(self.blink_status)
-        blink_group.setLayout(blink_layout)
-        layout.addWidget(blink_group)
-        
-        # Log area
-        log_group = QGroupBox("System Log")
-        log_layout = QVBoxLayout()
-        
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
+        self.log_area.setMaximumHeight(140)
         log_layout.addWidget(self.log_area)
         
         log_group.setLayout(log_layout)
@@ -1987,210 +2500,188 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         """Setup analysis and calibration tab"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        
-        # Calibration controls
-        cal_group = QGroupBox("Calibration Phases")
+        layout.setSpacing(18)
+
+        cal_group = QGroupBox()
         cal_layout = QGridLayout()
-        
-        # Eyes closed
+        cal_layout.setHorizontalSpacing(18)
+        cal_layout.setVerticalSpacing(12)
+
         self.eyes_closed_button = QPushButton("Start Eyes Closed")
         self.eyes_closed_button.clicked.connect(lambda: self.start_calibration('eyes_closed'))
         self.eyes_closed_button.setEnabled(False)
         cal_layout.addWidget(self.eyes_closed_button, 0, 0)
-        
+
         self.eyes_closed_label = QLabel("Status: Not started")
         cal_layout.addWidget(self.eyes_closed_label, 0, 1)
-        
-        # Eyes open
+
         self.eyes_open_button = QPushButton("Start Eyes Open")
         self.eyes_open_button.clicked.connect(lambda: self.start_calibration('eyes_open'))
         self.eyes_open_button.setEnabled(False)
         cal_layout.addWidget(self.eyes_open_button, 1, 0)
-        
+
         self.eyes_open_label = QLabel("Status: Not started")
         cal_layout.addWidget(self.eyes_open_label, 1, 1)
-        
-        # Task selection
-        task_layout = QHBoxLayout()
-        task_layout.addWidget(QLabel("Task:"))
-        
+
+        task_row = QHBoxLayout()
+        task_row.setSpacing(12)
+        task_label = QLabel("Task:")
+        task_row.addWidget(task_label)
+
         self.task_combo = QComboBox()
         self.task_combo.addItems(list(AVAILABLE_TASKS.keys()))
         self.task_combo.currentTextChanged.connect(self.update_task_preview)
-        task_layout.addWidget(self.task_combo)
-        
+        task_row.addWidget(self.task_combo, 1)
+
         self.task_button = QPushButton("Start Task")
         self.task_button.clicked.connect(self.start_task)
         self.task_button.setEnabled(False)
-        task_layout.addWidget(self.task_button)
-        
-        cal_layout.addLayout(task_layout, 2, 0, 1, 2)
-        
-        # Task preview area
+        task_row.addWidget(self.task_button)
+
+        cal_layout.addLayout(task_row, 2, 0, 1, 2)
+
         self.task_preview = QTextEdit()
         self.task_preview.setReadOnly(True)
-        self.task_preview.setMaximumHeight(120)  # Limit height
-        self.task_preview.setStyleSheet("""
-            QTextEdit {
-                background-color: #f0f8ff;
-                border: 2px solid #4a90e2;
-                border-radius: 6px;
-                padding: 10px;
-                font-size: 12px;
-                color: #2c3e50;
-            }
-        """)
+        self.task_preview.setMinimumHeight(220)
+        self.task_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.task_preview.setStyleSheet(
+            "background-color:#f8fbff; border:1px solid #dbeafe; border-radius:12px;"
+        )
         cal_layout.addWidget(self.task_preview, 3, 0, 1, 2)
-        
+
         self.task_label = QLabel("Status: Not started")
-        cal_layout.addWidget(self.task_label, 4, 0, 1, 2)
-        
-        # Stop button
+        self.task_label.setAlignment(Qt.AlignLeft)
+        self.task_label.setStyleSheet(
+            "padding:6px 12px; border-radius:10px; background:#eef2ff; color:#1e3a8a; font-weight:600;"
+        )
+        task_status_row = QHBoxLayout()
+        task_status_row.setContentsMargins(0, 6, 0, 0)
+        task_status_row.addWidget(self.task_label)
+        task_status_row.addStretch()
+        cal_layout.addLayout(task_status_row, 4, 0, 1, 2)
+
+        stop_row = QHBoxLayout()
+        stop_row.addStretch()
         self.stop_button = QPushButton("Stop Current Phase")
         self.stop_button.clicked.connect(self.stop_calibration)
         self.stop_button.setEnabled(False)
-        cal_layout.addWidget(self.stop_button, 5, 0, 1, 2)
-        
+        stop_row.addWidget(self.stop_button)
+        cal_layout.addLayout(stop_row, 5, 0, 1, 2)
+
         cal_group.setLayout(cal_layout)
         layout.addWidget(cal_group)
-        
-        # Analysis controls
-        analysis_group = QGroupBox("Analysis")
-        analysis_layout = QVBoxLayout()
-        
-        self.compute_baseline_button = QPushButton("Compute Baseline Statistics")
-        self.compute_baseline_button.clicked.connect(self.compute_baseline)
-        self.compute_baseline_button.setEnabled(False)
-        analysis_layout.addWidget(self.compute_baseline_button)
-        
-        self.analyze_task_button = QPushButton("Analyze Task Data")
-        self.analyze_task_button.clicked.connect(self.analyze_task)
-        self.analyze_task_button.setEnabled(False)
-        analysis_layout.addWidget(self.analyze_task_button)
-        
-        self.generate_report_button = QPushButton("Generate Report")
-        self.generate_report_button.clicked.connect(self.generate_report)
-        self.generate_report_button.setEnabled(False)
-        analysis_layout.addWidget(self.generate_report_button)
-        
-        analysis_group.setLayout(analysis_layout)
-        layout.addWidget(analysis_group)
-        
-        # Real-time features display
-        features_group = QGroupBox("Real-time Features")
-        features_layout = QVBoxLayout()
-        
-        self.features_table = QTableWidget()
-        self.features_table.setColumnCount(2)
-        self.features_table.setHorizontalHeaderLabels(['Feature', 'Value'])
-        self.features_table.horizontalHeader().setStretchLastSection(True)
-        features_layout.addWidget(self.features_table)
-        
-        features_group.setLayout(features_layout)
-        layout.addWidget(features_group)
-        
-        self.tabs.addTab(tab, "Analysis")
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        status_title = QLabel("Feature Pipeline:")
+        status_title.setStyleSheet("font-weight:600; color:#4b5563;")
+        status_row.addWidget(status_title)
+
+        self.feature_status_label = QLabel("Idle")
+        self.feature_status_label.setStyleSheet(
+            "padding:6px 14px; border-radius:999px; background:#f1f5f9; color:#475569; font-weight:600;"
+        )
+        status_row.addWidget(self.feature_status_label)
+        status_row.addStretch()
+        layout.addLayout(status_row)
+
+        self.analysis_summary = QTextEdit()
+        self.analysis_summary.setReadOnly(True)
+        self.analysis_summary.setVisible(False)
+        self.analysis_summary.setPlaceholderText("Task insights will appear here once analysis completes.")
+        self.analysis_summary.setMinimumHeight(140)
+        layout.addWidget(self.analysis_summary)
+
+        layout.addStretch()
+
+        self.analysis_tab_index = self.tabs.addTab(tab, "Analysis")
     
-    def setup_results_tab(self):
-        """Setup results and visualization tab"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Results display
-        results_group = QGroupBox("Analysis Results")
-        results_layout = QVBoxLayout()
-        
-        self.results_table = QTableWidget()
-        self.results_table.setColumnCount(6)
-        self.results_table.setHorizontalHeaderLabels([
-            'Feature', 'Baseline Mean', 'Baseline Std', 'Task Mean', 'Task Std', 'Significant Change'
-        ])
-        self.results_table.horizontalHeader().setStretchLastSection(True)
-        results_layout.addWidget(self.results_table)
-        
-        results_group.setLayout(results_layout)
-        layout.addWidget(results_group)
-        
-        # Statistics summary
-        stats_group = QGroupBox("Statistics Summary")
-        stats_layout = QVBoxLayout()
-        
-        self.stats_text = QTextEdit()
-        self.stats_text.setReadOnly(True)
-        self.stats_text.setMaximumHeight(200)
-        stats_layout.addWidget(self.stats_text)
-        
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
-        
-        self.tabs.addTab(tab, "Results")
-
     def setup_tasks_tab(self):
-        """Setup the windowed tasks analysis (events + 1s windows) tab."""
+        """Setup streamlined multi-task overview tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setSpacing(18)
 
-        # Session A loader
-        grpA = QGroupBox("Session A: Data & Labels")
-        la = QVBoxLayout()
-        rowA1 = QHBoxLayout()
-        self.btn_load_sig_A = QPushButton("Load Signal (.npy/.csv)")
-        self.btn_load_evt_A = QPushButton("Load Events (.csv/.json)")
-        rowA1.addWidget(self.btn_load_sig_A)
-        rowA1.addWidget(self.btn_load_evt_A)
-        la.addLayout(rowA1)
-        self.lbl_sig_A = QLabel("Signal: none")
-        self.lbl_evt_A = QLabel("Events: none")
-        la.addWidget(self.lbl_sig_A)
-        la.addWidget(self.lbl_evt_A)
-        grpA.setLayout(la)
-        layout.addWidget(grpA)
+        intro = QLabel("Run aggregated insights once you have completed individual task analyses.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#4b5563;")
+        layout.addWidget(intro)
 
-        # Session B loader (optional for two-session agreement)
-        grpB = QGroupBox("Session B (optional): Data & Labels")
-        lb = QVBoxLayout()
-        rowB1 = QHBoxLayout()
-        self.btn_load_sig_B = QPushButton("Load Signal B (.npy/.csv)")
-        self.btn_load_evt_B = QPushButton("Load Events B (.csv/.json)")
-        rowB1.addWidget(self.btn_load_sig_B)
-        rowB1.addWidget(self.btn_load_evt_B)
-        lb.addLayout(rowB1)
-        self.lbl_sig_B = QLabel("Signal B: none")
-        self.lbl_evt_B = QLabel("Events B: none")
-        lb.addWidget(self.lbl_sig_B)
-        lb.addWidget(self.lbl_evt_B)
-        grpB.setLayout(lb)
-        layout.addWidget(grpB)
+        self.analyze_all_button = QPushButton("Analyze All Tasks")
+        self.analyze_all_button.setFixedHeight(52)
+        self.analyze_all_button.clicked.connect(self._handle_multi_task_analysis)
+        layout.addWidget(self.analyze_all_button)
 
-        # Actions
-        actions = QGroupBox("Run Analyses")
-        la2 = QHBoxLayout()
-        self.btn_run_A = QPushButton("Analyze Session A")
-        self.btn_compare_AB = QPushButton("Two-Session Agreement A vs B")
-        self.btn_compare_AB.setEnabled(False)
-        la2.addWidget(self.btn_run_A)
-        la2.addWidget(self.btn_compare_AB)
-        actions.setLayout(la2)
-        layout.addWidget(actions)
+        self.generate_all_report_button = QPushButton("Generate Combined Report")
+        self.generate_all_report_button.setFixedHeight(52)
+        self.generate_all_report_button.clicked.connect(self._handle_multi_task_report)
+        layout.addWidget(self.generate_all_report_button)
 
-        # Report output
-        rep = QGroupBox("Task Report")
-        lr = QVBoxLayout()
-        self.task_report_text = QTextEdit()
-        self.task_report_text.setReadOnly(True)
-        lr.addWidget(self.task_report_text)
-        rep.setLayout(lr)
-        layout.addWidget(rep)
+        self.multi_task_text = QTextEdit()
+        self.multi_task_text.setReadOnly(True)
+        self.multi_task_text.setVisible(False)
+        self.multi_task_text.setPlaceholderText("Multi-task summaries will appear here once available.")
+        layout.addWidget(self.multi_task_text)
 
-        # Wire up
-        self.btn_load_sig_A.clicked.connect(lambda: self._load_signal_file('A'))
-        self.btn_load_evt_A.clicked.connect(lambda: self._load_events_file('A'))
-        self.btn_load_sig_B.clicked.connect(lambda: self._load_signal_file('B'))
-        self.btn_load_evt_B.clicked.connect(lambda: self._load_events_file('B'))
-        self.btn_run_A.clicked.connect(self._run_sessionA_analysis)
-        self.btn_compare_AB.clicked.connect(self._run_two_session_agreement)
+        layout.addStretch()
 
-        self.tabs.addTab(tab, "Tasks (Windowed)")
+        self.multi_task_tab_index = self.tabs.addTab(tab, "Multi-Task")
+
+    def _handle_multi_task_analysis(self):
+        """Placeholder multi-task analysis trigger."""
+        self.log_message("Multi-task analysis coming soon.")
+        QMessageBox.information(
+            self,
+            "Multi-Task Analysis",
+            "Multi-task analytics will be available in an upcoming update."
+        )
+
+    def _handle_multi_task_report(self):
+        """Placeholder multi-task reporting trigger."""
+        self.log_message("Combined report generation coming soon.")
+        QMessageBox.information(
+            self,
+            "Combined Report",
+            "Multi-task reporting will be available in an upcoming update."
+        )
+
+    def handle_proceed_to_analysis(self):
+        """Unlock the tasks tab and navigate to it."""
+        self.tabs.setTabEnabled(self.analysis_tab_index, True)
+        self.tabs.setCurrentIndex(self.analysis_tab_index)
+        self.log_message("Moved to task flow. Begin calibrations to continue.")
+
+    def _reset_workflow_progress(self):
+        """Return the UI to the beginning of the guided flow."""
+        self._tasks_complete = False
+        try:
+            self.tabs.setCurrentIndex(self.connection_tab_index)
+        except Exception:
+            pass
+        try:
+            self._calibration_timer.stop()
+        except Exception:
+            pass
+        if hasattr(self, 'proceed_to_analysis_button'):
+            self.proceed_to_analysis_button.setEnabled(False)
+
+    def _set_feature_status(self, text: str, state: str = "idle") -> None:
+        """Update the feature pipeline status pill."""
+        palette = {
+            "idle": ("#f1f5f9", "#475569"),
+            "ready": ("#dcfce7", "#166534"),
+            "collecting": ("#fef3c7", "#92400e"),
+            "analyzing": ("#e0f2fe", "#075985"),
+            "insights": ("#ede9fe", "#5b21b6"),
+            "error": ("#fee2e2", "#991b1b"),
+        }
+
+        background, foreground = palette.get(state, palette["idle"])
+        if hasattr(self, "feature_status_label"):
+            self.feature_status_label.setText(text)
+            self.feature_status_label.setStyleSheet(
+                f"padding:6px 14px; border-radius:999px; background:{background}; color:{foreground}; font-weight:600;"
+            )
 
     def _load_signal_file(self, which: str):
         """Load a 1D raw signal file (.npy preferred; .csv fallback)."""
@@ -2454,19 +2945,18 @@ class BrainLinkAnalyzerWindow(QMainWindow):
     def update_features_display(self):
         """Update real-time features display"""
         if not self.feature_engine.latest_features:
+            self._set_feature_status("Idle", "idle")
             return
         
         features = self.feature_engine.latest_features
-        
-        # Update features table
-        self.features_table.setRowCount(len(features))
-        
-        for i, (feature, value) in enumerate(features.items()):
-            self.features_table.setItem(i, 0, QTableWidgetItem(feature))
-            self.features_table.setItem(i, 1, QTableWidgetItem(f"{value:.4f}"))
+        preview = ", ".join(list(features.keys())[:3])
+        badge_text = f"Streaming {len(features)} features" if features else "Collecting"
+        self._set_feature_status(badge_text, "collecting")
+        if preview:
+            self.status_label.setText(f"Live features: {preview}...")
     
     def on_connect_clicked(self):
-        """Connect to BrainLink device with authentication"""
+        """Connect to MindLink device with authentication"""
         global BACKEND_URL, SERIAL_PORT, ALLOWED_HWIDS
         
         # Set backend URL based on environment
@@ -2596,15 +3086,15 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         # Detect and connect to device
         SERIAL_PORT = detect_brainlink()
         if not SERIAL_PORT:
-            self.log_message("✗ No BrainLink device found!")
+            self.log_message("✗ No MindLink device found!")
             return
         
-        self.log_message(f"✓ Found BrainLink device: {SERIAL_PORT}")
+        self.log_message(f"✓ Found MindLink device: {SERIAL_PORT}")
         
-        # Start BrainLink connection
+        # Start MindLink connection
         try:
             self.serial_obj = CushySerial(SERIAL_PORT, SERIAL_BAUD)
-            self.log_message("Starting BrainLink thread...")
+            self.log_message("Starting MindLink thread...")
             
             global stop_thread_flag
             stop_thread_flag = False
@@ -2620,19 +3110,17 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             self.eyes_closed_button.setEnabled(True)
             self.eyes_open_button.setEnabled(True)
             self.task_button.setEnabled(True)
-            
-            # Enable analysis buttons for immediate testing
-            self.compute_baseline_button.setEnabled(True)
-            self.analyze_task_button.setEnabled(True)
-            self.generate_report_button.setEnabled(True)
-            
-            self.log_message("✓ BrainLink connected successfully!")
+            self._set_feature_status("Waiting for calibration", "idle")
+            self._reset_workflow_progress()
+            self.proceed_to_analysis_button.setEnabled(True)
+
+            self.log_message("✓ MindLink connected successfully!")
             
         except Exception as e:
             self.log_message(f"✗ Failed to connect: {str(e)}")
     
     def on_disconnect_clicked(self):
-        """Disconnect from BrainLink device"""
+        """Disconnect from MindLink device"""
         global stop_thread_flag
         stop_thread_flag = True
         
@@ -2650,8 +3138,10 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.eyes_open_button.setEnabled(False)
         self.task_button.setEnabled(False)
         self.stop_button.setEnabled(False)
+        self._set_feature_status("Idle", "idle")
+        self._reset_workflow_progress()
         
-        self.log_message("✓ Disconnected from BrainLink device")
+        self.log_message("✓ Disconnected from MindLink device")
     
     def start_calibration(self, phase_name):
         """Start calibration phase"""
@@ -2659,15 +3149,23 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             self.log_message("Please stop current phase first")
             return
         
+        try:
+            self._calibration_timer.stop()
+        except Exception:
+            pass
+
         self.feature_engine.start_calibration_phase(phase_name)
         self.stop_button.setEnabled(True)
+        self._set_feature_status("Collecting baseline" if phase_name != 'task' else "Collecting task data", "collecting")
         
         if phase_name == 'eyes_closed':
             self.eyes_closed_label.setText("Status: Recording...")
             self.eyes_closed_button.setEnabled(False)
+            self._calibration_timer.start(30_000)
         elif phase_name == 'eyes_open':
             self.eyes_open_label.setText("Status: Recording...")
             self.eyes_open_button.setEnabled(False)
+            self._calibration_timer.start(30_000)
         
         self.log_message(f"✓ Started {phase_name} calibration")
     
@@ -2716,8 +3214,8 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         preview_html = f"""
         <div style="font-family: Arial, sans-serif; line-height: 1.4;">
             <h3 style="color: #2c3e50; margin-top: 0;">{task_display_name}</h3>
-            <p><strong>What you'll do:</strong><br>{friendly_info['overview']}</p>
-            <p><strong>What to expect:</strong><br>{friendly_info['what_to_expect']}</p>
+            <p><strong>Example: What you'll do:</strong><br>{friendly_info['overview']}</p>
+            <p><strong>Example: What to expect:</strong><br>{friendly_info['what_to_expect']}</p>
             <p><strong>Time:</strong> {friendly_info['duration_note']}</p>
             <p style="font-size: 11px; color: #666; margin-bottom: 0;">
                 <em>💡 Don't worry about the details now - you'll get clear instructions during the task!</em>
@@ -2739,6 +3237,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.task_label.setText(f"Status: Recording {task_type}...")
         self.task_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self._set_feature_status("Collecting task data", "collecting")
         
         self.log_message(f"✓ Started task: {task_type}")
         
@@ -2750,6 +3249,11 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         if self.feature_engine.current_state == 'idle':
             return
         
+        try:
+            self._calibration_timer.stop()
+        except Exception:
+            pass
+
         phase = self.feature_engine.current_state
         self.feature_engine.stop_calibration_phase()
         
@@ -2768,14 +3272,26 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             self.close_task_interface()
         
         self.log_message(f"✓ Stopped {phase} calibration")
-        
-        # Enable analysis buttons if we have data
+
         if (len(self.feature_engine.calibration_data['eyes_closed']['features']) > 0 and
-            len(self.feature_engine.calibration_data['eyes_open']['features']) > 0):
-            self.compute_baseline_button.setEnabled(True)
-        
-        if len(self.feature_engine.calibration_data['task']['features']) > 0:
-            self.analyze_task_button.setEnabled(True)
+                len(self.feature_engine.calibration_data['eyes_open']['features']) > 0):
+            self.compute_baseline()
+
+        if phase == 'task' and len(self.feature_engine.calibration_data['task']['features']) > 0:
+            self._set_feature_status("Analyzing task", "analyzing")
+            self.analyze_task()
+        elif self.feature_engine.current_state == 'idle':
+            self._set_feature_status("Idle", "idle")
+
+    def _auto_stop_calibration(self):
+        """Automatically stop baseline phases after the default capture window."""
+        phase = getattr(self.feature_engine, 'current_state', None)
+        if phase in {"eyes_closed", "eyes_open"}:
+            self.log_message(f"Auto-stopping {phase} calibration after 30 seconds.")
+            try:
+                self.stop_calibration()
+            except Exception:
+                self.log_message(f"Auto-stop failed for {phase} calibration")
     
     def compute_baseline_statistics(self):
         """Compute baseline statistics"""
@@ -2851,26 +3367,384 @@ class BrainLinkAnalyzerWindow(QMainWindow):
             return
         
         features = self.feature_engine.latest_features
-        
-        # Update features table
-        self.features_table.setRowCount(len(features))
-        
-        for i, (feature, value) in enumerate(features.items()):
-            self.features_table.setItem(i, 0, QTableWidgetItem(feature))
-            self.features_table.setItem(i, 1, QTableWidgetItem(f"{value:.4f}"))
-    
+        preview = ", ".join(
+            f"{name}: {value:.3f}" for name, value in list(features.items())[:4]
+        )
+        if preview:
+            self.status_label.setText(f"Live features — {preview}")
+
+    def handle_extended_eeg_from_packet(self, data: Any) -> None:
+        """Receive extended EEG telemetry and update battery widgets."""
+        battery_val = getattr(data, 'battery', None)
+        firmware = getattr(data, 'version', None)
+        try:
+            if battery_val is not None:
+                battery_val = int(float(battery_val))
+        except Exception:
+            battery_val = None
+        self.battery_update.emit(battery_val, firmware)
+
+    def _battery_stylesheet(self, level: Optional[int]) -> str:
+        if level is None:
+            chunk = "#94a3b8"
+        elif level >= 60:
+            chunk = "#16a34a"
+        elif level >= 30:
+            chunk = "#f59e0b"
+        else:
+            chunk = "#dc2626"
+        return (
+            "QProgressBar {"
+            " background-color: #f1f5f9;"
+            " border: 1px solid #d0d7de;"
+            " border-radius: 6px;"
+            " padding: 0;"
+            " }"
+            "QProgressBar::chunk {"
+            f" background-color: {chunk};"
+            " border-radius: 5px;"
+            " }"
+        )
+
+    def _build_battery_indicator(self) -> QWidget:
+        container = QWidget()
+        container.setObjectName("BatteryIndicator")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+
+        label = QLabel("Battery --%")
+        label.setStyleSheet("color:#475569; font-size:10px; font-weight:600;")
+        progress = QProgressBar()
+        progress.setRange(0, 100)
+        progress.setValue(0)
+        progress.setTextVisible(False)
+        progress.setFixedHeight(10)
+        progress.setFixedWidth(110)
+        progress.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        progress.setStyleSheet(self._battery_stylesheet(None))
+
+        layout.addWidget(label, alignment=Qt.AlignLeft)
+        layout.addWidget(progress)
+
+        container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+
+        entry: Dict[str, Any] = {
+            'container': container,
+            'label': label,
+            'progress': progress,
+        }
+        self._battery_widgets.append(entry)
+
+        if self._primary_battery_entry is None:
+            self._primary_battery_entry = entry
+            self._battery_widget = container
+            self.battery_status_label = label
+            self.battery_progress = progress
+
+        def _cleanup(_obj=None, entry_ref=entry):
+            try:
+                if entry_ref in self._battery_widgets:
+                    self._battery_widgets.remove(entry_ref)
+            except Exception:
+                pass
+            if self._primary_battery_entry is entry_ref:
+                self._primary_battery_entry = self._battery_widgets[0] if self._battery_widgets else None
+                primary = self._primary_battery_entry
+                if primary is not None:
+                    self._battery_widget = primary.get('container')
+                    self.battery_status_label = primary.get('label')
+                    self.battery_progress = primary.get('progress')
+                else:
+                    self._battery_widget = None
+                    self.battery_status_label = None
+                    self.battery_progress = None
+
+        try:
+            container.destroyed.connect(_cleanup)
+        except Exception:
+            pass
+
+        default_tip = "Battery telemetry will appear once the headset streams data."
+        for widget in (container, label, progress):
+            try:
+                widget.setToolTip(default_tip)
+            except Exception:
+                pass
+
+        if self._pending_battery_update is not None:
+            pending = self._pending_battery_update
+            self._pending_battery_update = None
+            self._apply_battery_update(*pending)
+        else:
+            self._apply_battery_update(self._battery_level, self._battery_version)
+
+        return container
+
+    def _apply_battery_update(self, level: Optional[int], version: Optional[Any]) -> None:
+        if level is not None:
+            try:
+                level = max(0, min(100, int(level)))
+            except Exception:
+                level = None
+        if level is not None:
+            self._battery_level = level
+        if version is not None:
+            self._battery_version = version
+
+        if not self._battery_widgets:
+            self._pending_battery_update = (self._battery_level, self._battery_version)
+            return
+
+        self._pending_battery_update = None
+
+        tooltip = "Battery telemetry unavailable."
+        if level is not None:
+            tooltip = f"Battery level {level}%"
+            if version is not None:
+                tooltip = f"{tooltip} — firmware {version}"
+        elif version is not None:
+            tooltip = f"Firmware {version}"
+
+        label_text = "Battery --%" if level is None else f"Battery {level}%"
+        progress_value = level if level is not None else 0
+        progress_style = self._battery_stylesheet(level)
+
+        invalid_entries: List[Dict[str, Any]] = []
+        for entry in self._battery_widgets:
+            try:
+                label = entry.get('label')
+                bar = entry.get('progress')
+                container = entry.get('container')
+                if bar is not None:
+                    bar.setValue(progress_value)
+                    bar.setStyleSheet(progress_style)
+                if label is not None:
+                    label.setText(label_text)
+                for widget in (container, label, bar):
+                    if widget is not None:
+                        widget.setToolTip(tooltip)
+            except RuntimeError:
+                invalid_entries.append(entry)
+            except Exception:
+                continue
+
+        for bad in invalid_entries:
+            try:
+                self._battery_widgets.remove(bad)
+            except ValueError:
+                pass
+
+        if self.battery_status_label is not None:
+            try:
+                self.battery_status_label.setText(label_text)
+                self.battery_status_label.setToolTip(tooltip)
+            except Exception:
+                self.battery_status_label = None
+        if self.battery_progress is not None:
+            try:
+                self.battery_progress.setValue(progress_value)
+                self.battery_progress.setStyleSheet(progress_style)
+                self.battery_progress.setToolTip(tooltip)
+            except Exception:
+                self.battery_progress = None
+
+    def _center_task_dialog(self) -> None:
+        dialog = self._active_task_dialog
+        if dialog is None:
+            return
+        try:
+            if not dialog.isVisible():
+                return
+        except RuntimeError:
+            self._active_task_dialog = None
+            return
+        center = self.mapToGlobal(self.rect().center())
+        frame = dialog.frameGeometry()
+        frame.moveCenter(center)
+        dialog.move(frame.topLeft())
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        overlay = self._task_overlay
+        if overlay is not None:
+            try:
+                overlay.setGeometry(self.rect())
+                overlay.raise_()
+            except RuntimeError:
+                self._task_overlay = None
+        dialog = self._active_task_dialog
+        if dialog is not None:
+            try:
+                dialog.raise_()
+            except RuntimeError:
+                self._active_task_dialog = None
+        self._center_task_dialog()
+
+    def closeEvent(self, event):  # type: ignore[override]
+        try:
+            ref = getattr(BrainLinkAnalyzerWindow, '_active_window', None)
+            if ref and ref() is self:
+                BrainLinkAnalyzerWindow._active_window = None
+        except Exception:
+            pass
+        try:
+            self.close_task_interface()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def show_task_interface(self, task_type):
-        """Show interactive task interface"""
-        pass
-    
+        """Show interactive task guidance with a modal overlay."""
+        self.close_task_interface()
+
+        task_config = AVAILABLE_TASKS.get(task_type)
+        if not task_config:
+            self.log_message(f"⚠ Unknown task configuration: {task_type}")
+            return
+
+        try:
+            overlay = QFrame(self)
+            overlay.setObjectName("TaskModalOverlay")
+            overlay.setStyleSheet("background-color: rgba(15, 23, 42, 170);")
+            overlay.setGeometry(self.rect())
+            overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+            overlay.show()
+            overlay.raise_()
+            self._task_overlay = overlay
+
+            def _overlay_click(_event):
+                try:
+                    if self._active_task_dialog is not None:
+                        self._active_task_dialog.raise_()
+                except Exception:
+                    pass
+
+            try:
+                overlay.mousePressEvent = _overlay_click  # type: ignore[assignment]
+            except Exception:
+                pass
+
+            dialog = QDialog(self)
+            dialog.setObjectName("TaskGuidanceDialog")
+            dialog.setModal(True)
+            dialog.setWindowFlag(Qt.FramelessWindowHint, True)
+            dialog.setWindowFlag(Qt.Dialog, True)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            apply_modern_dialog_theme(dialog)
+
+            dialog_layout = QVBoxLayout(dialog)
+            dialog_layout.setContentsMargins(28, 24, 28, 24)
+            dialog_layout.setSpacing(16)
+
+            title = QLabel(task_config.get('name', task_type.replace('_', ' ').title()))
+            title.setStyleSheet("font-size:18px; font-weight:600; color:#0f172a;")
+            dialog_layout.addWidget(title, alignment=Qt.AlignLeft)
+
+            summary = QLabel(task_config.get('description', "Follow the on-screen instructions."))
+            summary.setWordWrap(True)
+            summary.setStyleSheet("color:#475569; font-size:13px;")
+            dialog_layout.addWidget(summary)
+
+            instruction_blocks: List[str] = []
+            instructions = task_config.get('instructions')
+            if instructions:
+                instruction_blocks.append(instructions)
+
+            phase_structure = task_config.get('phase_structure') or []
+            if phase_structure:
+                phase_lines = []
+                for idx, phase in enumerate(phase_structure, start=1):
+                    phase_type = phase.get('type', f'STEP {idx}').upper()
+                    phase_duration = phase.get('duration')
+                    phase_inst = phase.get('instruction', '')
+                    duration_note = f" ({phase_duration}s)" if phase_duration else ""
+                    phase_lines.append(f"<b>{phase_type}</b>{duration_note}: {phase_inst}")
+                if phase_lines:
+                    instruction_blocks.append("<br>".join(phase_lines))
+
+            duration = task_config.get('duration')
+            if duration:
+                instruction_blocks.append(f"Estimated duration: {duration} seconds.")
+
+            if instruction_blocks:
+                instructions_label = QLabel("<br><br>".join(instruction_blocks))
+                instructions_label.setTextFormat(Qt.RichText)
+                instructions_label.setWordWrap(True)
+                instructions_label.setStyleSheet("color:#0f172a; font-size:13px;")
+                dialog_layout.addWidget(instructions_label)
+
+            button_row = QHBoxLayout()
+            button_row.setSpacing(12)
+            button_row.addStretch()
+
+            if hasattr(self, 'stop_button') and self.stop_button is not None:
+                stop_task_btn = QPushButton("Stop Task")
+                stop_task_btn.clicked.connect(self.stop_button.click)
+                button_row.addWidget(stop_task_btn)
+
+            dismiss_btn = QPushButton("Dismiss")
+            dismiss_btn.setDefault(True)
+            dismiss_btn.clicked.connect(dialog.accept)
+            button_row.addWidget(dismiss_btn)
+
+            dialog_layout.addLayout(button_row)
+
+            dialog.finished.connect(self.close_task_interface)
+            dialog.show()
+            if overlay is not None:
+                overlay.raise_()
+            dialog.raise_()
+            try:
+                dialog.activateWindow()
+            except Exception:
+                pass
+
+            self._active_task_dialog = dialog
+            self._active_task_type = task_type
+            self._center_task_dialog()
+        except Exception as exc:
+            self.log_message(f"⚠ Failed to display task dialog: {exc}")
+            self.close_task_interface()
+
     def close_task_interface(self):
-        """Close task interface"""
-        pass
+        """Close any active task dialog and remove the overlay."""
+        dialog = self._active_task_dialog
+        overlay = self._task_overlay
+
+        self._active_task_dialog = None
+        self._task_overlay = None
+        self._active_task_type = None
+
+        if overlay is not None:
+            try:
+                overlay.deleteLater()
+            except Exception:
+                pass
+
+        if dialog is not None:
+            try:
+                dialog.finished.disconnect(self.close_task_interface)
+            except Exception:
+                pass
+            try:
+                if dialog.isVisible():
+                    dialog.close()
+            except RuntimeError:
+                pass
+            except Exception:
+                pass
+            try:
+                dialog.deleteLater()
+            except Exception:
+                pass
     
     def compute_baseline(self):
         """Compute baseline statistics"""
         self.feature_engine.compute_baseline_statistics()
-        self.analyze_task_button.setEnabled(True)
+        self._set_feature_status("Baseline ready", "ready")
+        self.analysis_summary.clear()
+        self.analysis_summary.setVisible(False)
         self.log_message("✓ Baseline statistics computed")
     
     def analyze_task(self):
@@ -2878,24 +3752,33 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         results = self.feature_engine.analyze_task_data()
         if results:
             self.update_results_display(results)
-            self.generate_report_button.setEnabled(True)
-            self.log_message("✓ Task analysis completed")
+            self._set_feature_status("Insights ready", "insights")
     
     def update_results_display(self, results):
-        """Update results table"""
-        self.results_table.setRowCount(len(results))
-        
-        for i, (feature, data) in enumerate(results.items()):
-            self.results_table.setItem(i, 0, QTableWidgetItem(feature))
-            self.results_table.setItem(i, 1, QTableWidgetItem(f"{data['baseline_mean']:.4f}"))
-            self.results_table.setItem(i, 2, QTableWidgetItem(f"{data['baseline_std']:.4f}"))
-            self.results_table.setItem(i, 3, QTableWidgetItem(f"{data['task_mean']:.4f}"))
-            self.results_table.setItem(i, 4, QTableWidgetItem(f"{data['task_std']:.4f}"))
-            self.results_table.setItem(i, 5, QTableWidgetItem("Yes" if data['significant_change'] else "No"))
+        """Render analysis insights in the summary panel."""
+        self.analysis_results = results
+        lines = ["Feature Insights", ""]
+
+        for feature, data in results.items():
+            significant = "Significant change" if data['significant_change'] else "No significant change"
+            lines.append(
+                f"• {feature}: task μ {data['task_mean']:.3f} vs baseline μ {data['baseline_mean']:.3f}"
+            )
+            lines.append(
+                f"    σ_task {data['task_std']:.3f}, σ_base {data['baseline_std']:.3f} — {significant}"
+            )
+
+        summary_text = "\n".join(lines)
+        self.analysis_summary.setPlainText(summary_text)
+        self.analysis_summary.setVisible(True)
+        self._tasks_complete = True
+        self.tabs.setTabEnabled(self.multi_task_tab_index, True)
+        self.tabs.setCurrentIndex(self.multi_task_tab_index)
+        self.log_message("✓ Task analysis completed. Multi-task summary unlocked.")
     
     def generate_report(self):
         """Generate analysis report"""
-        report = "BrainLink Feature Analysis Report\n"
+        report = "MindLink Feature Analysis Report\n"
         report += "=" * 50 + "\n\n"
         
         # Add baseline statistics
@@ -2916,7 +3799,8 @@ class BrainLinkAnalyzerWindow(QMainWindow):
                     report += f"Task Mean={results['task_mean']:.4f}, "
                     report += f"Baseline Mean={results['baseline_mean']:.4f}\n"
         
-        self.stats_text.setPlainText(report)
+        self.analysis_summary.setPlainText(report)
+        self.analysis_summary.setVisible(True)
         self.log_message("✓ Report generated")
 
 

@@ -44,9 +44,9 @@ from scipy.integrate import simpson as simps
 from scipy.stats import zscore
 
 # Windowed task analysis pipeline modules
-from task_analyzer import TaskAnalyzer
-from event_parser import parse_events
-from task_reporting import render_task_report, render_two_session_agreement
+# from task_analyzer import TaskAnalyzer
+# from event_parser import parse_events
+# from task_reporting import render_task_report, render_two_session_agreement
 # Optional extra tasks plugin - import dynamically to avoid static resolution errors
 try:
     import importlib
@@ -205,13 +205,18 @@ AVAILABLE_TASKS = {
         'name': 'Mental Math',
         'description': 'Perform mental arithmetic (e.g., count backwards from 1000 by 7s)',
         'duration': 60,
-        'instructions': 'Count backwards from 1000 by 7s: 1000, 993, 986, 979...'
+        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 1000 by 7s: 1000, 993, 986, 979...\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'phases': ['analyze', 'rest'],
+        'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to count backwards from 1000 by 7s with your EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'COUNT: 1000, 993, 986, 979... Keep counting backwards by 7s.'}
+        ]
     },
     'visual_imagery': {
         'name': 'Visual Imagery',
         'description': 'Visualize a familiar place or object in detail',
         'duration': 60,
-        'instructions': 'Close your eyes and visualize walking through your home in detail. Wait for the CUE, then begin vivid imagery.',
+        'instructions': '🔊 EYES CLOSED TASK - Close your eyes and visualize walking through your home in detail. Wait for the CUE, then begin vivid imagery.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Visualize walking through your home in rich sensory detail continuously. (Start on beep sound).'},
@@ -222,27 +227,27 @@ AVAILABLE_TASKS = {
         'name': 'Working Memory',
         'description': 'Remember and manipulate a sequence of numbers or letters',
         'duration': 60,
-        'instructions': 'Remember this sequence: 3-8-2-9-5-1. Now add 2 to each number mentally.'
+        'instructions': '🔊 EYES CLOSED TASK - Remember this sequence: 3-8-2-9-5-1. Now add 2 to each number mentally with your EYES CLOSED.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
     },
     'attention_focus': {
         'name': 'Focused Attention',
         'description': 'Focus intensely on breathing or a single point',
         'duration': 60,
-        'instructions': 'Focus all attention on your breathing. Wait for the CUE, then begin counting breaths 1–10 and repeat.',
+        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Wait for the CUE, then begin counting breaths 1–10 and repeat.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
-            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted.'},
-            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted.'}
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'}
         ]
     },
     'language_processing': {
         'name': 'Language Processing',
         'description': 'Generate words or sentences following specific rules',
         'duration': 60,
-        'instructions': 'Think of as many words as possible that start with the letter "S". Wait for the CUE, then begin generation silently.',
+        'instructions': '🔊 EYES CLOSED TASK - Think of as many words as possible that start with the letter "S". Wait for the CUE, then begin generation silently.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
-            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare – recall the rule (words starting with "S").'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare – Silently list distinct "S" words, avoid repeats, keep steady pace with EYES CLOSED.).'},
             {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'GENERATE: Silently list distinct "S" words, avoid repeats, keep steady pace.'}
         ]
     },
@@ -250,20 +255,25 @@ AVAILABLE_TASKS = {
         'name': 'Motor Imagery',
         'description': 'Imagine performing physical movements without moving',
         'duration': 60,
-        'instructions': 'Imagine throwing a ball with your right hand, then left hand, alternating'
+        'instructions': '🔊 EYES CLOSED TASK - Imagine throwing a ball with your right hand, then left hand, alternating.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'phases': ['analyze', 'rest'],
+        'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to imagine throwing a ball with your right hand, then left hand, alternating with EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'IMAGINE: Throw a ball with your right hand, then left hand, alternating. Feel the motion vividly.'}
+        ]
     },
     'cognitive_load': {
         'name': 'Cognitive Load',
         'description': 'Perform multiple cognitive tasks simultaneously',
         'duration': 60,
-        'instructions': 'Count backwards from 50 by 3s while visualizing the numbers in blue'
+        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 50 by 3s while visualizing the numbers in blue.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
     },
     # --- Added protocol tasks with phase-based timing ---
     'emotion_face': {
     'name': 'Emotion Recognition',
         'description': 'View static emotional face images with timed phases.',
         'duration': 114,  # 6 images × 19s each (8s cue + 11s look+resonate)
-        'instructions': 'For each face: wait for CUE, then LOOK & RESONATE.',
+        'instructions': '👁️ EYES OPEN TASK - For each face: wait for CUE, then LOOK & RESONATE.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'continuous_recording': True,  # Record throughout entire task
         'phase_structure': [
@@ -292,7 +302,7 @@ AVAILABLE_TASKS = {
     'name': 'Creative Fluency',
         'description': 'Divergent thinking task with timed phases.',
         'duration': 96,  # 2 prompts × 48s each (8s get ready + 10s cue + 30s thinking)
-        'instructions': 'Wait for the countdown, read the prompt, then think creatively.',
+        'instructions': '👁️ EYES OPEN TASK - Wait for the countdown, read the prompt, then think creatively.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for creative thinking...'},
@@ -322,7 +332,7 @@ AVAILABLE_TASKS = {
     'name': 'Perspective Shift',
         'description': 'Cognitive reappraisal task with timed phases.',
         'duration': 96,  # 2 scenarios × 48s each (8s get ready + 10s cue + 30s thinking)
-        'instructions': 'Wait for the countdown, read the scenario, then follow the instructions.',
+        'instructions': '👁️ EYES OPEN TASK - Wait for the countdown, read the scenario, then follow the instructions.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for thinking task...'},
@@ -354,7 +364,7 @@ AVAILABLE_TASKS = {
     'name': 'Curiosity Reveal',
         'description': 'Curiosity task with reveal timing.',
         'duration': 45,  # 8s get ready + 2s cue + 2s wait + 33s video
-        'instructions': 'Wait for the countdown, then watch the video reveal.',
+        'instructions': '👁️ EYES OPEN TASK - Wait for the countdown, then watch the video reveal.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for video reveal...'},
@@ -366,6 +376,57 @@ AVAILABLE_TASKS = {
             # Placeholders; ensure files exist in assets/ or replace with available ones
             'images': ['curiosity_card_back.png'],
             'videos': ['curiosity_clip_01.mp4']
+        }
+    },
+    # --- Lifestyle pathway tasks ---
+    'num_form': {
+        'name': 'Numerical Preference',
+        'description': 'Evaluate aesthetic preference for numbers vs forms with balanced look phases.',
+        'duration': 60,
+        'instructions': (
+            '👁️ EYES OPEN TASK\n\n'
+            'NUMBERS: Wait for the countdown, then LOOK for the numbers. Keep your gaze steady and minimize movement.\n'
+            'FORMS: Wait for the countdown, then LOOK for the shapes. Keep your gaze steady and minimize movement.\n\n'
+            'Audio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
+        ),
+        'phases': ['analyze', 'rest'],
+        'continuous_recording': True,
+        'phase_structure': [
+            {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready...'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'NUMBERS'},
+            {'type': 'viewing', 'duration': 20, 'record': True, 'media_file': 'NUM_FORM.png'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FORMS'},
+            {'type': 'viewing', 'duration': 20, 'record': True, 'media_file': 'NUM_FORM.png'},
+            {'type': 'rest', 'duration': 2, 'record': False, 'instruction': 'Rest.'}
+        ],
+        'media': {
+            'images': ['NUM_FORM.png'],
+            'videos': []
+        }
+    },
+    'order_surprise': {
+        'name': 'Order & Surprise',
+        'description': 'Evaluate aesthetic response to ORDER vs SURPRISE with balanced look phases.',
+        'duration': 60,
+        'instructions': (
+            '👁️ EYES OPEN TASK\n\n'
+            'ORDER: Wait for the countdown, then COUNT symmetrical/normal shapes. Keep your gaze steady and minimize movement.\n'
+            'SURPRISE: Wait for the countdown, then COUNT non-symmetrical/abnormal shapes. Keep your gaze steady and minimize movement.\n\n'
+            'Audio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
+        ),
+        'phases': ['analyze', 'rest'],
+        'continuous_recording': True,
+        'phase_structure': [
+            {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready...'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'ORDER'},
+            {'type': 'viewing', 'duration': 20, 'record': True, 'media_file': 'ORDER_SURPRISE.png'},
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'SURPRISE'},
+            {'type': 'viewing', 'duration': 20, 'record': True, 'media_file': 'ORDER_SURPRISE.png'},
+            {'type': 'rest', 'duration': 2, 'record': False, 'instruction': 'Rest.'}
+        ],
+        'media': {
+            'images': ['ORDER_SURPRISE.png'],
+            'videos': []
         }
     }
 }

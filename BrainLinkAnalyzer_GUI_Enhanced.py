@@ -278,7 +278,7 @@ class EnhancedAnalyzerConfig:
     # Newly configurable analysis parameters
     block_seconds: float = 8.0
     mt_tapers: int = 3
-    nmin_sessions: int = 5
+    nmin_sessions: int = 2  # Minimum 2 sessions needed for statistical comparison
     
     # Performance note: Permutation testing is optimized with:
     # 1. Vectorized Welch t-test (5-10x faster than looping)
@@ -327,7 +327,7 @@ class EnhancedAnalyzerConfig:
             if self.nmin_sessions < 2:
                 self.nmin_sessions = 2
         except Exception:
-            self.nmin_sessions = 5
+            self.nmin_sessions = 2  # Minimum needed for statistical comparison
 
     @property
     def is_feature_selection(self) -> bool:
@@ -419,7 +419,7 @@ class EnhancedAnalyzerConfig:
             correlation_guard=parsed.corr_guard if parsed.corr_guard is not None else env_corr_guard,
             block_seconds=(parsed.block_seconds if parsed.block_seconds is not None else (env_block_seconds if env_block_seconds is not None else 8.0)),
             mt_tapers=(parsed.mt_tapers if parsed.mt_tapers is not None else (env_mt_tapers if env_mt_tapers is not None else 3)),
-            nmin_sessions=(parsed.nmin_sessions if parsed.nmin_sessions is not None else (env_nmin_sessions if env_nmin_sessions is not None else 5)),
+            nmin_sessions=(parsed.nmin_sessions if parsed.nmin_sessions is not None else (env_nmin_sessions if env_nmin_sessions is not None else 2)),
         )
         return cfg
 
@@ -465,7 +465,7 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         self.blink_sigma = blink_sigma
         # Block-based analysis defaults
         self.block_seconds = getattr(self.config, 'block_seconds', 8.0)
-        self.nmin_sessions = getattr(self.config, 'nmin_sessions', 5)
+        self.nmin_sessions = getattr(self.config, 'nmin_sessions', 2)
         self.mt_tapers = getattr(self.config, 'mt_tapers', 3)
         # Mains frequency heuristic (Windows: 60Hz, others default 50Hz)
         try:
@@ -1858,6 +1858,11 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         # Default to eyes-closed baseline if available
         chosen_baseline_label = 'eyes_closed' if len(ec_features) > 0 else 'eyes_open'
         baseline_source_features = ec_features if chosen_baseline_label == 'eyes_closed' else eo_features
+        
+        # Initialize block-equalized variables (may be set later by KM computation)
+        eb_eq = None
+        et_eq = None
+        
         baseline_df = pd.DataFrame(baseline_source_features) if baseline_source_features else None
         task_df = pd.DataFrame(task_features)
 
@@ -3274,7 +3279,8 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         layout.setSpacing(2)
 
         label = QLabel("Battery --%")
-        label.setStyleSheet("color: #475569; font-size: 10px; font-weight: 600;")
+        # Make battery text bold and high-contrast (black) so it's readable on status bars
+        label.setStyleSheet("color: #000000; font-size: 10px; font-weight: 800;")
         bar = QtWidgets.QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
@@ -5839,6 +5845,15 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             dlg = QDialog(self)
             # Generic title without task name
             dlg.setWindowTitle("Task Session")
+            
+            # Set window icon
+            try:
+                icon_path = BL.resource_path(os.path.join('assets', 'favicon.ico'))
+                if os.path.isfile(icon_path):
+                    dlg.setWindowIcon(QIcon(icon_path))
+            except Exception:
+                pass
+            
             try:
                 dlg.setStyleSheet("background-color:#1e1e1e;color:#f0f0f0;")
             except Exception:
@@ -5851,20 +5866,25 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             except Exception:
                 pass
 
-            # Responsive sizing within available screen (constrained to prevent overflow)
+            # Large responsive sizing for better visibility (especially for emoface images)
             try:
                 screen = QtWidgets.QApplication.primaryScreen()
                 if screen:
                     avail = screen.availableGeometry()
-                    # Limit dialog to 70% of screen height max to prevent overflow
-                    target_w = min(max(int(avail.width() * 0.45), 640), min(900, avail.width()-80))
-                    target_h = min(max(int(avail.height() * 0.55), 480), int(avail.height()*0.70))
+                    # Use 85% of screen width and 90% of height for better image visibility
+                    target_w = int(avail.width() * 0.85)
+                    target_h = int(avail.height() * 0.90)
                     dlg.resize(target_w, target_h)
-                    dlg.setMinimumWidth(int(target_w * 0.9))
-                    dlg.setMaximumHeight(int(avail.height() * 0.70))
+                    # Center the dialog on screen
+                    dlg.move(
+                        avail.left() + (avail.width() - target_w) // 2,
+                        avail.top() + (avail.height() - target_h) // 2
+                    )
+                else:
+                    dlg.resize(1200, 900)
             except Exception:
-                # Fallback width
-                dlg.resize(700, 600)
+                # Fallback to large size
+                dlg.resize(1200, 900)
 
             # (Task name hidden per user request; no header label added)
 
@@ -5908,13 +5928,20 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 screen = QtWidgets.QApplication.primaryScreen()
                 if screen:
                     avail = screen.availableGeometry()
-                    # Reserve space for other UI elements (header, timer, buttons ~300px)
-                    max_media_height = int(avail.height() * 0.40)  # 40% of screen for media
+                    # Use larger space for media (especially important for emoface images)
+                    max_media_height = int(avail.height() * 0.60)  # 60% of screen for media
                     media_label.setMaximumHeight(max_media_height)
+                    # CRITICAL: Set minimum size so label doesn't collapse when empty
+                    media_label.setMinimumHeight(int(avail.height() * 0.40))  # 40% minimum
+                    media_label.setMinimumWidth(600)  # Larger minimum width for better image display
                 else:
-                    media_label.setMaximumHeight(400)
+                    media_label.setMaximumHeight(700)
+                    media_label.setMinimumHeight(500)
+                    media_label.setMinimumWidth(600)
             except Exception:
-                media_label.setMaximumHeight(400)
+                media_label.setMaximumHeight(700)
+                media_label.setMinimumHeight(500)
+                media_label.setMinimumWidth(600)
             media_label.setScaledContents(False)  # Maintain aspect ratio
             layout.addWidget(media_label)
 
@@ -6078,6 +6105,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
 
             def _play_video(filename: str):
                 # Attempt to play provided video file; fallback to common defaults
+                print(f"DEBUG _play_video: filename={filename}")
                 target_names = []
                 if filename:
                     target_names.append(filename)
@@ -6089,41 +6117,67 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                 if 'curiosity_clip_01.mp4' not in target_names:
                     target_names.append('curiosity_clip_01.mp4')
 
+                print(f"DEBUG _play_video: searching for video files: {target_names}")
+                
                 # Resolve a file path
                 found_path = None
                 for name in target_names:
                     try:
                         p = BL.resource_path(os.path.join('assets', name))
+                        print(f"DEBUG _play_video: checking {p}, exists={os.path.isfile(p)}")
                         if os.path.isfile(p):
-                            found_path = p; break
+                            found_path = p
+                            print(f"DEBUG _play_video: FOUND video at: {found_path}")
+                            break
                         if os.path.isfile(name):
-                            found_path = name; break
-                    except Exception:
+                            found_path = name
+                            print(f"DEBUG _play_video: FOUND video at: {found_path}")
+                            break
+                    except Exception as e:
+                        print(f"DEBUG _play_video: error checking {name}: {e}")
                         continue
+                
                 if not found_path:
-                    media_label.setText(f"[Missing video: {target_names[0]}]")
+                    msg = f"[Missing video: {target_names[0]}]"
+                    print(f"DEBUG _play_video: {msg}")
+                    media_label.setText(msg)
                     return
 
+                print(f"DEBUG _play_video: DISABLE_QT_MULTIMEDIA={DISABLE_QT_MULTIMEDIA}")
+                print(f"DEBUG _play_video: _allow_embedded_video()={_allow_embedded_video()}")
+                print(f"DEBUG _play_video: _ensure_player()={_ensure_player()}")
+                
                 # If Qt multimedia disabled/unavailable, or embedding not allowed, fallback to external player
                 if DISABLE_QT_MULTIMEDIA or not _allow_embedded_video() or not _ensure_player():
                     try:
-                        media_label.setText("[Opening external video player...]")
+                        msg = f"[Opening external video player for: {os.path.basename(found_path)}]"
+                        print(f"DEBUG _play_video: {msg}")
+                        media_label.setText(msg)
+                        
                         if platform.system() == 'Windows':
+                            print(f"DEBUG _play_video: Using os.startfile() on Windows")
                             os.startfile(found_path)  # type: ignore[attr-defined]
+                            print(f"DEBUG _play_video: os.startfile() returned successfully")
                         else:
                             # Non-Windows simple attempt
                             import subprocess, shlex
                             # Prefer xdg-open / open (mac) / fallback to vlc if installed
                             opener = 'open' if platform.system() == 'Darwin' else 'xdg-open'
                             cmd = [opener, found_path]
+                            print(f"DEBUG _play_video: Using {opener} command: {cmd}")
                             try:
                                 subprocess.Popen(cmd)
-                            except Exception:
+                                print(f"DEBUG _play_video: Popen returned successfully")
+                            except Exception as e:
                                 # Last resort: try vlc
+                                print(f"DEBUG _play_video: {opener} failed, trying vlc: {e}")
                                 subprocess.Popen(['vlc', '--play-and-exit', found_path])
                         self._current_video_phase = False  # Not an embedded phase
+                        print(f"DEBUG _play_video: External video launched successfully")
                     except Exception as e:
-                        media_label.setText(f"[External video launch failed: {e}]")
+                        msg = f"[External video launch failed: {e}]"
+                        print(f"DEBUG _play_video: ERROR: {msg}")
+                        media_label.setText(msg)
                     return
 
                 # At this point we have Qt multimedia player (only if allow_embedded_video)
@@ -6193,26 +6247,70 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     return
                 try:
                     path = BL.resource_path(os.path.join('assets', img_name))
+                    print(f"DEBUG _set_image: img_name={img_name}, path={path}, exists={os.path.isfile(path)}")
                     if os.path.isfile(path):
                         try:
                             pm = QPixmap(path)
+                            print(f"DEBUG _set_image: QPixmap loaded, isNull={pm.isNull()}, size={pm.width()}x{pm.height()}")
                         except Exception as e:
+                            print(f"DEBUG _set_image: QPixmap load error: {e}")
                             media_label.setText(f"[Image load error: {e}]")
                             return
                         if pm.isNull():
+                            print(f"DEBUG _set_image: QPixmap is null!")
                             media_label.setText(f"[Invalid image: {img_name}]")
                             return
-                        # Scale image to fit within label constraints (both width and height)
-                        max_w = media_label.maximumWidth() if media_label.maximumWidth() < 16777215 else 640
-                        max_h = media_label.maximumHeight() if media_label.maximumHeight() < 16777215 else 400
-                        # Scale to fit within both width and height constraints
+                        
+                        # CRITICAL FIX: Get actual available size from the label
+                        # The media_label has maximum constraints set, so use those
                         try:
-                            scaled_pm = pm.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            # Get the label's current size (after layout has processed)
+                            available_width = media_label.width()
+                            available_height = media_label.height()
+                            
+                            # If label hasn't been sized yet by layout, use maximum constraints
+                            if available_width < 100 or available_height < 100:
+                                # Force the dialog and layout to update
+                                if dlg.isVisible():
+                                    dlg.update()
+                                    QtWidgets.QApplication.processEvents()
+                                # Get maximum constraints
+                                max_width = media_label.maximumWidth()
+                                max_height = media_label.maximumHeight()
+                                # Use reasonable defaults if maximums are infinite
+                                available_width = max_width if max_width < 16777215 else 640
+                                available_height = max_height if max_height < 16777215 else 400
+                            
+                            print(f"DEBUG _set_image: available size = {available_width}x{available_height}")
+                            print(f"DEBUG _set_image: original pixmap size = {pm.width()}x{pm.height()}")
+                            
+                            # Scale image to fit within available space, maintaining aspect ratio
+                            # This ensures the ENTIRE image is visible without cropping
+                            scaled_pm = pm.scaled(
+                                available_width, 
+                                available_height, 
+                                Qt.KeepAspectRatio,  # Maintain aspect ratio - fits entire image
+                                Qt.SmoothTransformation  # High quality scaling
+                            )
+                            print(f"DEBUG _set_image: scaled pixmap size = {scaled_pm.width()}x{scaled_pm.height()}")
+                            
+                            # Set the pixmap
                             media_label.setPixmap(scaled_pm)
-                        except Exception:
-                            # Fallback: scale by width only
-                            disp_w = min(max_w, pm.width())
-                            media_label.setPixmap(pm.scaledToWidth(disp_w, Qt.SmoothTransformation))
+                            print(f"DEBUG _set_image: setPixmap() called successfully")
+                            
+                            # Make label visible and force repaint
+                            media_label.setVisible(True)
+                            media_label.update()
+                            print(f"DEBUG _set_image: image displayed")
+                            
+                        except Exception as e:
+                            print(f"DEBUG _set_image: scaling error: {e}")
+                            # Fallback: use a safe default size
+                            scaled_pm = pm.scaled(640, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            media_label.setPixmap(scaled_pm)
+                            media_label.setVisible(True)
+                            print(f"DEBUG _set_image: fallback scaling used")
+                        
                         # Cache original for fullscreen cover scaling
                         try:
                             self._fs_last_pm = pm
@@ -6580,10 +6678,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     overlay_widget.mousePressEvent = _overlay_click  # type: ignore[assignment]
                 except Exception:
                     pass
-            try:
-                QtCore.QTimer.singleShot(0, lambda d=dlg: self._position_task_dialog(d))
-            except Exception:
-                pass
+            # Skip positioning since dialog is fullscreen
+            # try:
+            #     QtCore.QTimer.singleShot(0, lambda d=dlg: self._position_task_dialog(d))
+            # except Exception:
+            #     pass
             try:
                 dlg.exec()
             finally:

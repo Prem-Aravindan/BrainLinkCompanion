@@ -479,6 +479,72 @@ def remove_eye_blink_artifacts(data, window=10):
             clean[i] = np.median(data)
     return clean
 
+
+def check_signal_legitimacy(data_window, min_variance=0.05, max_diff_std=0.1, max_identical_fraction=0.02):
+    """Perform quick heuristic checks to determine if the incoming EEG window looks legitimate.
+
+    Returns a dict with flags and short messages. Heuristics used:
+      - low_variance: variance below min_variance (flatline / disconnected)
+      - regular_steps: very low std of successive differences (possible synthetic/demo)
+      - too_many_identical: many repeated identical values (clipping or synthetic)
+    """
+    metrics = {}
+    arr = np.array(data_window)
+    metrics['variance'] = float(np.var(arr)) if arr.size > 0 else 0.0
+    metrics['std_of_diffs'] = float(np.std(np.diff(arr))) if arr.size > 1 else 0.0
+    # Fraction of identical samples (exact equality)
+    if arr.size > 0:
+        unique_count = len(np.unique(arr))
+        metrics['identical_fraction'] = 1.0 - (unique_count / float(arr.size))
+    else:
+        metrics['identical_fraction'] = 1.0
+
+    flags = {
+        'low_variance': metrics['variance'] < min_variance,
+        'regular_steps': metrics['std_of_diffs'] < max_diff_std,
+        'too_many_identical': metrics['identical_fraction'] > max_identical_fraction
+    }
+
+    messages = []
+    if flags['low_variance']:
+        messages.append('Low variance - possible disconnected/flatline signal')
+    if flags['regular_steps']:
+        messages.append('Highly regular sample-to-sample steps - possible synthetic/demo data')
+    if flags['too_many_identical']:
+        messages.append('Many identical values - possible clipping or artificial data')
+
+    return {'flags': flags, 'metrics': metrics, 'messages': messages}
+
+
+def is_signal_noisy(data_window, fs=512, high_freq_threshold=30.0, high_freq_ratio_thresh=0.5):
+    """Estimate whether the window is dominated by high-frequency noise.
+
+    Simple heuristic: compute PSD and compare power above `high_freq_threshold` to total power.
+    Returns (is_noisy: bool, details: dict)
+    """
+    arr = np.array(data_window)
+    details = {}
+    if arr.size < 4:
+        details['reason'] = 'too_short'
+        details['high_freq_ratio'] = 0.0
+        return False, details
+
+    try:
+        freqs, psd = compute_psd(arr, fs)
+        total = np.trapz(psd, freqs) if psd.size > 0 else 0.0
+        mask = freqs >= high_freq_threshold
+        high_power = np.trapz(psd[mask], freqs[mask]) if np.any(mask) else 0.0
+        ratio = float(high_power / (total + 1e-12))
+        details['total_power'] = float(total)
+        details['high_power'] = float(high_power)
+        details['high_freq_ratio'] = ratio
+        details['freq_max'] = float(freqs[np.argmax(psd)]) if psd.size > 0 else 0.0
+        is_noisy = ratio > high_freq_ratio_thresh
+        return is_noisy, details
+    except Exception as e:
+        details['error'] = str(e)
+        return False, details
+
 def detect_brainlink():
     """Device detection from mother code with enhanced logging"""
     ports = serial.tools.list_ports.comports()
@@ -609,7 +675,20 @@ def onRaw(raw):
                 alpha_rel = alpha_power / total_power if total_power > 0 else 0
                 theta_rel = theta_power / total_power if total_power > 0 else 0
                 beta_rel = beta_power / total_power if total_power > 0 else 0
-                
+                # Run additional signal legitimacy and noise checks
+                try:
+                    recent_window = filtered[-512:] if len(filtered) >= 512 else filtered
+                    legitimacy = check_signal_legitimacy(recent_window)
+                    noisy, noise_details = is_signal_noisy(recent_window, fs=512)
+                    onRaw._last_check = {'legitimacy': legitimacy, 'is_noisy': noisy, 'noise_details': noise_details}
+                    # Print concise warnings so users see issues in console
+                    if legitimacy['messages']:
+                        print("SIGNAL WARNING:", "; ".join(legitimacy['messages']))
+                    if noisy:
+                        print(f"SIGNAL WARNING: High-frequency noise detected (ratio={noise_details.get('high_freq_ratio',0):.2f})")
+                except Exception as e:
+                    print(f"Signal checks failed: {e}")
+
                 # print(f"MENTAL STATE INTERPRETATION:")
                 # if alpha_rel > 0.3:
                 #     print(f"  → High alpha activity - relaxed, eyes closed state")

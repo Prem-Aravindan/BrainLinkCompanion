@@ -4664,6 +4664,11 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         if phase_ending == 'idle' and not task_ui_present:
             return
 
+        # CRITICAL: Save task name BEFORE calling stop_calibration_phase (which sets current_task to None)
+        task_name_to_save = None
+        if phase_ending == 'task':
+            task_name_to_save = getattr(self.feature_engine, 'current_task', None)
+
         try:
             try:
                 self._calibration_timer.stop()
@@ -4719,6 +4724,34 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     task_windows = len(self.feature_engine.calibration_data.get('task', {}).get('features', []))
                 except Exception:
                     task_windows = 0
+                
+                # CRITICAL FIX: Save task data to the 'tasks' dictionary with task name as key
+                try:
+                    if task_windows > 0 and task_name_to_save:
+                        # Copy data from singular 'task' to plural 'tasks' dictionary
+                        if 'tasks' not in self.feature_engine.calibration_data:
+                            self.feature_engine.calibration_data['tasks'] = {}
+                        
+                        # Store the task data under the task name WITH timestamps list (matching expected format)
+                        self.feature_engine.calibration_data['tasks'][task_name_to_save] = {
+                            'features': self.feature_engine.calibration_data['task']['features'].copy(),
+                            'timestamps': self.feature_engine.calibration_data['task']['timestamps'].copy()
+                        }
+                        
+                        self.log_message(f"✓ Saved {task_windows} windows for task '{task_name_to_save}'")
+                        print(f"DEBUG: Stored task data for '{task_name_to_save}': {task_windows} feature windows")
+                    elif task_windows == 0:
+                        self.log_message("Warning: No feature windows captured for this task")
+                        print(f"DEBUG: Task had 0 windows - not saved")
+                    elif not task_name_to_save:
+                        self.log_message("Warning: Task name was not set")
+                        print(f"DEBUG: current_task was None - cannot save")
+                except Exception as e:
+                    self.log_message(f"Warning: Failed to save task data: {e}")
+                    print(f"ERROR saving task data: {e}")
+                    import traceback
+                    traceback.print_exc()
+                
                 try:
                     if task_windows > 0:
                         self._set_feature_status("Task captured", "ready")
@@ -5910,7 +5943,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
             instruction_label = QLabel(general_instructions)
             instruction_label.setWordWrap(True)
             instruction_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-            instruction_label.setStyleSheet("font-size:13px;line-height:1.3;")
+            instruction_label.setStyleSheet("font-size:16px;line-height:1.4;")
             layout.addWidget(instruction_label)
 
             # Next phase preview (lets user know what's coming – EEG best practice reduces surprise / movement)
@@ -6487,6 +6520,12 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     return
                 phase = self._phase_structure[self._phase_index]
                 ptype = phase.get('type', 'phase')
+                # Safety: if coming into a non-viewing/task phase, ensure any fullscreen image is closed
+                try:
+                    if task_type in ('order_surprise', 'num_form') and ptype not in ('viewing', 'task'):
+                        _close_fullscreen_image()
+                except Exception:
+                    pass
                 phase_progress.setText(f"{self._phase_index+1} / {len(self._phase_structure)}")
                 # Instruction precedence: explicit phase instruction else generic
                 instr_txt = phase.get('instruction') or general_instructions
@@ -6606,6 +6645,14 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     self._phase_remaining -= 1
                     if self._phase_remaining <= 0:
                         # Advance
+                        # Before advancing, ensure fullscreen image (if any) is closed when leaving look phases
+                        try:
+                            prev_phase = self._phase_structure[self._phase_index]
+                            prev_ptype = prev_phase.get('type', 'phase')
+                            if task_type in ('order_surprise', 'num_form') and prev_ptype in ('viewing', 'task'):
+                                _close_fullscreen_image()
+                        except Exception:
+                            pass
                         # Stop video if current phase was video before advancing
                         if self._current_video_phase:
                             _stop_video()

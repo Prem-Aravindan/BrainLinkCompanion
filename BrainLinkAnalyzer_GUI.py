@@ -201,39 +201,55 @@ FEATURE_NAMES = [
 
 # Available cognitive tasks
 AVAILABLE_TASKS = {
-    'mental_math': {
-        'name': 'Mental Math',
-        'description': 'Perform mental arithmetic (e.g., count backwards from 1000 by 7s)',
-        'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 1000 by 7s: 1000, 993, 986, 979...\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
-        'phases': ['analyze', 'rest'],
-        'phase_structure': [
-            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to count backwards from 1000 by 7s with your EYES CLOSED.'},
-            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'COUNT: 1000, 993, 986, 979... Keep counting backwards by 7s.'}
-        ]
-    },
     'visual_imagery': {
         'name': 'Visual Imagery',
         'description': 'Visualize a familiar place or object in detail',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Close your eyes and visualize walking through your home in detail. Wait for the CUE, then begin vivid imagery.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '🔊 EYES CLOSED TASK - Visualize walking through your home in rich sensory detail.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start visualizing\n• 4 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Visualize walking through your home in rich sensory detail continuously. (Start on beep sound).'},
             {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'IMAGERY: Visualize walking through your home in rich sensory detail continuously.'}
         ]
     },
+    'attention_focus': {
+        'name': 'Focused Attention',
+        'description': 'Focus intensely on breathing or a single point',
+        'duration': 60,
+        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Count breaths 1–10 and repeat.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start focusing\n• 4 beeps = Task complete, you can stop',
+        'phases': ['analyze', 'rest'],
+        'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'}
+        ]
+    },
+    'mental_math': {
+        'name': 'Mental Math',
+        'description': 'Perform mental arithmetic (e.g., count backwards from 200 by 7s)',
+        'duration': 60,
+        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 200 by 7s: 200, 193, 186, 179...\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start counting\n• 4 beeps = Task complete, you can stop',
+        'phases': ['analyze', 'rest'],
+        'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to count backwards from 200 by 7s with your EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'COUNT: 200, 193, 186, 179... Keep counting backwards by 7s.'}
+        ]
+    },
     'working_memory': {
         'name': 'Working Memory',
         'description': 'Remember and manipulate a sequence of numbers or letters',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Remember this sequence: 3-8-2-9-5-1. Now add 2 to each number mentally with your EYES CLOSED.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
+        'instructions': '🔊 EYES CLOSED TASK - Remember this sequence: 3-8-2-9-5-1. Now add 2 to each number mentally.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start calculating\n• 4 beeps = Task complete, you can stop',
+        'phases': ['analyze', 'rest'],
+        'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to remember and manipulate this sequence: 3-8-2-9-5-1. Add 2 to each number with EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'REMEMBER: 3-8-2-9-5-1. Add 2 to each number: 5-10-4-11-7-3. Keep manipulating the sequence.'}
+        ]
     },
     'attention_focus': {
         'name': 'Focused Attention',
         'description': 'Focus intensely on breathing or a single point',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Wait for the CUE, then begin counting breaths 1–10 and repeat.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Count breaths 1–10 and repeat.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start focusing\n• 4 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'},
@@ -244,7 +260,7 @@ AVAILABLE_TASKS = {
         'name': 'Language Processing',
         'description': 'Generate words or sentences following specific rules',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Think of as many words as possible that start with the letter "S". Wait for the CUE, then begin generation silently.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '🔊 EYES CLOSED TASK - Think of as many words as possible that start with the letter "S".\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start generating words\n• 4 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare – Silently list distinct "S" words, avoid repeats, keep steady pace with EYES CLOSED.).'},
@@ -255,7 +271,7 @@ AVAILABLE_TASKS = {
         'name': 'Motor Imagery',
         'description': 'Imagine performing physical movements without moving',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Imagine throwing a ball with your right hand, then left hand, alternating.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '🔊 EYES CLOSED TASK - Imagine throwing a ball with your right hand, then left hand, alternating.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start imagining\n• 4 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to imagine throwing a ball with your right hand, then left hand, alternating with EYES CLOSED.'},
@@ -266,14 +282,19 @@ AVAILABLE_TASKS = {
         'name': 'Cognitive Load',
         'description': 'Perform multiple cognitive tasks simultaneously',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 50 by 3s while visualizing the numbers in blue.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
+        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 50 by 3s while visualizing the numbers in blue.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start task\n• 4 beeps = Task complete, you can stop',
+        'phases': ['analyze', 'rest'],
+        'phase_structure': [
+            {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to count backwards from 50 by 3s while visualizing each number in blue with EYES CLOSED.'},
+            {'type': 'task', 'duration': 52, 'record': True, 'instruction': 'COUNT & VISUALIZE: 50, 47, 44, 41... Count backwards by 3s while seeing each number in blue.'}
+        ]
     },
     # --- Added protocol tasks with phase-based timing ---
     'emotion_face': {
     'name': 'Emotion Recognition',
         'description': 'View static emotional face images with timed phases.',
         'duration': 114,  # 6 images × 19s each (8s cue + 11s look+resonate)
-        'instructions': '👁️ EYES OPEN TASK - For each face: wait for CUE, then LOOK & RESONATE.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - For each face: LOOK & RESONATE with the emotion shown.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start task | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'continuous_recording': True,  # Record throughout entire task
         'phase_structure': [
@@ -302,7 +323,7 @@ AVAILABLE_TASKS = {
     'name': 'Creative Fluency',
         'description': 'Divergent thinking task with timed phases.',
         'duration': 96,  # 2 prompts × 48s each (8s get ready + 10s cue + 30s thinking)
-        'instructions': '👁️ EYES OPEN TASK - Wait for the countdown, read the prompt, then think creatively.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - Read the prompt, then think of creative and unusual uses.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start thinking | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for creative thinking...'},
@@ -332,7 +353,7 @@ AVAILABLE_TASKS = {
     'name': 'Perspective Shift',
         'description': 'Cognitive reappraisal task with timed phases.',
         'duration': 96,  # 2 scenarios × 48s each (8s get ready + 10s cue + 30s thinking)
-        'instructions': '👁️ EYES OPEN TASK - Wait for the countdown, read the scenario, then follow the instructions.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - Read the scenario and follow the specific thinking instructions.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start task | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for thinking task...'},
@@ -364,7 +385,7 @@ AVAILABLE_TASKS = {
     'name': 'Curiosity Reveal',
         'description': 'Curiosity task with reveal timing.',
         'duration': 45,  # 8s get ready + 2s cue + 2s wait + 33s video
-        'instructions': '👁️ EYES OPEN TASK - Wait for the countdown, then watch the video reveal.\n\nAudio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - Watch the video reveal with full attention.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & video starts | 4 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for video reveal...'},
@@ -516,11 +537,13 @@ def check_signal_legitimacy(data_window, min_variance=0.05, max_diff_std=0.1, ma
     return {'flags': flags, 'metrics': metrics, 'messages': messages}
 
 
-def is_signal_noisy(data_window, fs=512, high_freq_threshold=30.0, high_freq_ratio_thresh=0.5):
+def is_signal_noisy(data_window, fs=512, high_freq_threshold=30.0, high_freq_ratio_thresh=0.7):
     """Estimate whether the window is dominated by high-frequency noise.
 
     Simple heuristic: compute PSD and compare power above `high_freq_threshold` to total power.
     Returns (is_noisy: bool, details: dict)
+    
+    Note: Threshold increased to 0.7 (70%) to reduce false positives from normal EEG artifacts.
     """
     arr = np.array(data_window)
     details = {}
@@ -992,6 +1015,34 @@ class FeatureAnalysisEngine:
         
         # Real-time features
         self.latest_features = {}
+    
+    def reset_session(self):
+        """Clear all accumulated data for new session"""
+        # Clear data buffers
+        self.raw_buffer.clear()
+        for band in self.filtered_buffers:
+            self.filtered_buffers[band].clear()
+        for band in self.power_buffers:
+            self.power_buffers[band].clear()
+        
+        # Clear calibration data
+        self.calibration_data = {
+            'eyes_closed': {'features': [], 'timestamps': []},
+            'eyes_open': {'features': [], 'timestamps': []},
+            'task': {'features': [], 'timestamps': []}
+        }
+        
+        # Reset state
+        self.current_state = 'idle'
+        self.current_task = None
+        self.state_start_time = None
+        
+        # Clear analysis results
+        self.baseline_stats = {}
+        self.analysis_results = {}
+        self.latest_features = {}
+        
+        print("✓ Feature engine session reset complete")
         
     def add_data(self, new_data):
         """Add new EEG data and process it"""
@@ -3261,14 +3312,29 @@ class BrainLinkAnalyzerWindow(QMainWindow):
     
     def on_disconnect_clicked(self):
         """Disconnect from MindLink device"""
-        global stop_thread_flag
+        global stop_thread_flag, live_data_buffer
         stop_thread_flag = True
+        
+        # Clear session data - CRITICAL FIX for data persistence issue
+        live_data_buffer.clear()
+        print("Session data cleared: live_data_buffer reset")
         
         if self.serial_obj and self.serial_obj.is_open:
             self.serial_obj.close()
         
         if self.brainlink_thread and self.brainlink_thread.is_alive():
             self.brainlink_thread.join(timeout=2)
+        
+        # Reset feature engine state
+        if hasattr(self, 'feature_engine') and self.feature_engine:
+            self.feature_engine.reset_session()
+        
+        # Clear plot displays
+        if hasattr(self, 'plot_widget') and self.plot_widget:
+            try:
+                self.plot_widget.clear()
+            except Exception as e:
+                print(f"Error clearing plot: {e}")
         
         self.connect_button.setEnabled(True)
         self.disconnect_button.setEnabled(False)
@@ -3281,7 +3347,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self._set_feature_status("Idle", "idle")
         self._reset_workflow_progress()
         
-        self.log_message("✓ Disconnected from MindLink device")
+        self.log_message("✓ Disconnected from MindLink device - Session data cleared")
     
     def start_calibration(self, phase_name):
         """Start calibration phase"""
@@ -3814,6 +3880,53 @@ class BrainLinkAnalyzerWindow(QMainWindow):
                 instructions_label.setStyleSheet("color:#0f172a; font-size:13px;")
                 dialog_layout.addWidget(instructions_label)
 
+            # Add signal quality indicator
+            signal_quality_label = QLabel("Signal quality: Checking...")
+            signal_quality_label.setStyleSheet(
+                "font-size: 12px; "
+                "padding: 8px 12px; "
+                "border-radius: 6px; "
+                "background-color: #f1f5f9; "
+                "color: #64748b;"
+            )
+            signal_quality_label.setAlignment(Qt.AlignCenter)
+            dialog_layout.addWidget(signal_quality_label)
+            
+            # Store reference for updates
+            dialog._signal_quality_label = signal_quality_label
+            
+            # Create timer for signal quality updates
+            signal_timer = QTimer(dialog)
+            
+            def update_signal_quality():
+                try:
+                    if hasattr(self, 'live_data_buffer') and len(self.live_data_buffer) > 100:
+                        recent_data = list(self.live_data_buffer)[-100:]
+                        if self._is_signal_noisy(recent_data, threshold_std=200):
+                            signal_quality_label.setText("⚠ Signal: Check contact")
+                            signal_quality_label.setStyleSheet(
+                                "font-size: 12px; padding: 8px 12px; border-radius: 6px; "
+                                "background-color: #fef2f2; color: #dc2626; font-weight: 600;"
+                            )
+                        else:
+                            signal_quality_label.setText("✓ Signal: Good")
+                            signal_quality_label.setStyleSheet(
+                                "font-size: 12px; padding: 8px 12px; border-radius: 6px; "
+                                "background-color: #f0fdf4; color: #16a34a; font-weight: 600;"
+                            )
+                    else:
+                        signal_quality_label.setText("○ Signal: Waiting...")
+                        signal_quality_label.setStyleSheet(
+                            "font-size: 12px; padding: 8px 12px; border-radius: 6px; "
+                            "background-color: #f1f5f9; color: #64748b;"
+                        )
+                except Exception as e:
+                    pass
+            
+            signal_timer.timeout.connect(update_signal_quality)
+            signal_timer.start(500)  # Update every 500ms
+            dialog._signal_timer = signal_timer
+
             button_row = QHBoxLayout()
             button_row.setSpacing(12)
             button_row.addStretch()
@@ -3863,6 +3976,14 @@ class BrainLinkAnalyzerWindow(QMainWindow):
                 pass
 
         if dialog is not None:
+            # Stop signal quality timer if it exists
+            if hasattr(dialog, '_signal_timer') and dialog._signal_timer is not None:
+                try:
+                    dialog._signal_timer.stop()
+                    dialog._signal_timer.deleteLater()
+                except Exception:
+                    pass
+            
             try:
                 dialog.finished.disconnect(self.close_task_interface)
             except Exception:

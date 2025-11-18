@@ -2888,7 +2888,7 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
         # Cognitive tasks (always included)
         # Restore full cognitive task set so all are available across match types
         self._cognitive_tasks = [
-            'mental_math', 'visual_imagery', 'working_memory', 'attention_focus',
+            'visual_imagery', 'attention_focus', 'mental_math', 'working_memory',
             'language_processing', 'motor_imagery', 'cognitive_load'
         ]
         self._selected_protocol = None

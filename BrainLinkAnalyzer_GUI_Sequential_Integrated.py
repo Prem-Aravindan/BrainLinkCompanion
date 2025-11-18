@@ -34,6 +34,139 @@ from BrainLinkAnalyzer_GUI_Enhanced import (
     BL
 )
 
+# Import signal quality check functions from base GUI
+import BrainLinkAnalyzer_GUI as BaseGUI
+
+
+def assess_eeg_signal_quality(data_window, fs=512):
+    """
+    Professional multi-metric EEG signal quality assessment.
+    
+    Based on research-grade EEG quality control methods:
+    1. Amplitude range check (EEG typically 10-100 µV, extreme values indicate artifacts)
+    2. Line noise detection (50/60 Hz power should be minimal after filtering)
+    3. Electrode contact via impedance proxy (variance and baseline wander)
+    4. Motion artifacts (sudden large spikes or sustained high amplitude)
+    5. Statistical properties (kurtosis for artifact detection)
+    
+    Returns: (quality_score: 0-100, status: str, details: dict)
+    """
+    arr = np.array(data_window)
+    details = {}
+    
+    if arr.size < 256:
+        return 0, "insufficient_data", {"reason": "need more samples"}
+    
+    # Metric 1: Amplitude range check (EEG should be 10-200 µV typically)
+    arr_std = np.std(arr)
+    arr_mean = np.mean(arr)
+    arr_max = np.max(np.abs(arr))
+    
+    details['std'] = float(arr_std)
+    details['mean'] = float(arr_mean)
+    details['max_amplitude'] = float(arr_max)
+    
+    # Very low variance = not worn or poor contact
+    if arr_std < 2.0:  # Less than 2 µV std is suspiciously low
+        return 10, "not_worn", details
+    
+    # Extremely high variance = severe artifacts or not on head
+    if arr_std > 500:  # More than 500 µV std is extreme noise
+        return 15, "severe_artifacts", details
+    
+    # Metric 2: Check for realistic EEG amplitude range
+    # Real EEG rarely exceeds 200 µV; values over 500 µV indicate poor contact/artifacts
+    if arr_max > 500:
+        return 25, "amplitude_artifacts", details
+    
+    # Metric 3: Check baseline stability (DC drift indicates poor contact)
+    # Split window into 4 quarters and check mean shift
+    quarter_size = len(arr) // 4
+    quarters_means = [np.mean(arr[i*quarter_size:(i+1)*quarter_size]) for i in range(4)]
+    baseline_drift = np.std(quarters_means)
+    details['baseline_drift'] = float(baseline_drift)
+    
+    if baseline_drift > 30:  # Excessive drift
+        return 35, "poor_contact", details
+    
+    # Metric 4: Check for motion artifacts using kurtosis
+    # High kurtosis (>5) indicates spiky artifacts
+    from scipy.stats import kurtosis
+    kurt = kurtosis(arr, fisher=True)
+    details['kurtosis'] = float(kurt)
+    
+    if abs(kurt) > 10:  # Very spiky signal
+        return 40, "motion_artifacts", details
+    
+    # Metric 5: Frequency content analysis
+    try:
+        freqs, psd = BaseGUI.compute_psd(arr, fs)
+        
+        # Check 50/60 Hz line noise (should be minimal)
+        idx_50hz = np.argmin(np.abs(freqs - 50))
+        idx_60hz = np.argmin(np.abs(freqs - 60))
+        line_noise_50 = psd[idx_50hz] if idx_50hz < len(psd) else 0
+        line_noise_60 = psd[idx_60hz] if idx_60hz < len(psd) else 0
+        line_noise = max(line_noise_50, line_noise_60)
+        
+        total_power = np.sum(psd)
+        line_noise_ratio = line_noise / (total_power + 1e-12)
+        details['line_noise_ratio'] = float(line_noise_ratio)
+        
+        # Check EEG band distribution (should have power in 1-30 Hz range)
+        idx_eeg_band = (freqs >= 1) & (freqs <= 30)
+        eeg_band_power = np.sum(psd[idx_eeg_band])
+        eeg_band_ratio = eeg_band_power / (total_power + 1e-12)
+        details['eeg_band_ratio'] = float(eeg_band_ratio)
+        
+        # If less than 30% power in EEG bands, likely not real EEG
+        if eeg_band_ratio < 0.3:
+            return 45, "non_eeg_signal", details
+        
+        # Check high frequency noise (>40 Hz)
+        idx_high_freq = freqs >= 40
+        high_freq_power = np.sum(psd[idx_high_freq])
+        high_freq_ratio = high_freq_power / (total_power + 1e-12)
+        details['high_freq_ratio'] = float(high_freq_ratio)
+        
+        if high_freq_ratio > 0.6:  # More than 60% high frequency
+            return 50, "excessive_noise", details
+        
+    except Exception as e:
+        details['psd_error'] = str(e)
+    
+    # Calculate overall quality score (0-100)
+    # Start at 100 and deduct points for issues
+    quality_score = 100
+    
+    # Deduct for non-optimal but acceptable conditions
+    if arr_std < 5:  # Very low but not zero
+        quality_score -= 20
+    elif arr_std > 200:  # High but not extreme
+        quality_score -= 15
+    
+    if baseline_drift > 15:
+        quality_score -= 10
+    
+    if abs(kurt) > 5:
+        quality_score -= 10
+    
+    if 'high_freq_ratio' in details and details['high_freq_ratio'] > 0.4:
+        quality_score -= 15
+    
+    if 'eeg_band_ratio' in details and details['eeg_band_ratio'] < 0.5:
+        quality_score -= 10
+    
+    # Determine status
+    if quality_score >= 75:
+        status = "good"
+    elif quality_score >= 50:
+        status = "acceptable"
+    else:
+        status = "poor"
+    
+    return max(0, quality_score), status, details
+
 # Import Qt components directly from PySide6
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtWidgets import (
@@ -225,9 +358,9 @@ class MindLinkStatusBar(QFrame):
         sep2 = QLabel("|")
         layout.addWidget(sep2)
         
-        # Feature extraction status
-        self.feature_status = QLabel("Features: 0/68")
-        layout.addWidget(self.feature_status)
+        # Signal quality indicator (replaces features pill)
+        self.signal_quality = QLabel("Signal: Checking...")
+        layout.addWidget(self.signal_quality)
         
         layout.addStretch()
         
@@ -258,6 +391,11 @@ class MindLinkStatusBar(QFrame):
         self.update_timer.timeout.connect(self.update_status)
         self.update_timer.start(500)  # Update every 500ms
         
+        # Quality tracking for sustained poor signal detection
+        self.quality_history = []  # List of (timestamp, quality_score) tuples
+        self.poor_quality_threshold = 45  # Below this is considered poor
+        self.is_noisy = False  # Current state
+        
         # Help dialog reference
         self.help_dialog = None
     
@@ -272,30 +410,41 @@ class MindLinkStatusBar(QFrame):
                 self.eeg_status.setText("EEG: ✗ No Signal")
                 self.eeg_status.setStyleSheet("color: #fbbf24; font-weight: 700;")
             
-            # Check feature extraction status
-            if hasattr(self.main_window, 'feature_engine'):
-                engine = self.main_window.feature_engine
-                # Count features in current state
-                current_state = getattr(engine, 'current_state', 'idle')
-                if current_state != 'idle' and hasattr(engine, 'calibration_data'):
-                    data = engine.calibration_data.get(current_state, {})
-                    features_list = data.get('features', [])
-                    if features_list and len(features_list) > 0:
-                        # Check last feature dict for completeness
-                        last_features = features_list[-1] if features_list else {}
-                        feature_count = len(last_features)
-                        if feature_count >= 68:
-                            self.feature_status.setText(f"Features: ✓ 68/68 Live")
-                            self.feature_status.setStyleSheet("color: #10b981; font-weight: 700;")
-                        else:
-                            self.feature_status.setText(f"Features: {feature_count}/68")
-                            self.feature_status.setStyleSheet("color: #fbbf24; font-weight: 700;")
-                    else:
-                        self.feature_status.setText("Features: Waiting...")
-                        self.feature_status.setStyleSheet("color: #94a3b8; font-weight: 700;")
+            # Professional multi-metric signal quality assessment
+            if len(BL.live_data_buffer) >= 512:
+                import numpy as np
+                import time
+                recent_data = np.array(list(BL.live_data_buffer)[-512:])
+                
+                quality_score, status, details = assess_eeg_signal_quality(recent_data, fs=512)
+                
+                # Track quality history (timestamp, score)
+                current_time = time.time()
+                self.quality_history.append((current_time, quality_score))
+                
+                # Remove entries older than 5 seconds
+                self.quality_history = [(t, q) for t, q in self.quality_history if current_time - t <= 5.0]
+                
+                # Count how many times quality dropped below threshold in last 5 seconds
+                poor_count = sum(1 for t, q in self.quality_history if q < self.poor_quality_threshold)
+                
+                # Update noisy state: need 5+ poor readings in 5 seconds to trigger
+                if poor_count >= 5:
+                    self.is_noisy = True
+                elif poor_count == 0:  # All recent readings good - reset
+                    self.is_noisy = False
+                # Otherwise maintain current state (hysteresis)
+                
+                # Display only two states: Good or Noisy
+                if self.is_noisy:
+                    self.signal_quality.setText("Signal: ⚠ Noisy")
+                    self.signal_quality.setStyleSheet("color: #f59e0b; font-weight: 700;")
                 else:
-                    self.feature_status.setText("Features: Idle")
-                    self.feature_status.setStyleSheet("color: #94a3b8; font-weight: 700;")
+                    self.signal_quality.setText("Signal: ✓ Good")
+                    self.signal_quality.setStyleSheet("color: #10b981; font-weight: 700;")
+            else:
+                self.signal_quality.setText("Signal: Waiting...")
+                self.signal_quality.setStyleSheet("color: #94a3b8; font-weight: 700;")
         except Exception:
             pass
     
@@ -399,7 +548,7 @@ def add_protocol_filter_to_enhanced_window():
             'Lifestyle': ['order_surprise', 'num_form'],
         }
         self._cognitive_tasks = [
-            'mental_math', 'visual_imagery', 'working_memory', 'attention_focus',
+            'visual_imagery', 'attention_focus', 'mental_math', 'working_memory',
             'language_processing', 'motor_imagery', 'cognitive_load'
         ]
     
@@ -985,9 +1134,19 @@ class OSSelectionDialog(QDialog):
             # This is a programmatic close (from navigation), allow it
             event.accept()
         else:
-            # This is user clicking X button - ask for confirmation
-            event.ignore()
-            self.workflow.main_window.close()
+            # This is user clicking X button - confirm and quit
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
     
     def on_next(self):
         """Save OS selection and proceed"""
@@ -1116,8 +1275,18 @@ class EnvironmentSelectionDialog(QDialog):
         if self._programmatic_close:
             event.accept()
         else:
-            event.ignore()
-            self.workflow.main_window.close()
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
     
     def on_env_changed(self, env_name: str):
         """Update backend URLs when environment changes"""
@@ -1154,14 +1323,20 @@ class EnvironmentSelectionDialog(QDialog):
             
             if port:
                 BL.SERIAL_PORT = port
-                self.status_label.setText(f"✓ Connected to {port}")
+                self.status_label.setText(f"✓ EEG headset registered to device: {port}\n\nPlease press Next & sign in to connect to the device.")
                 self.status_label.setStyleSheet("color: #10b981; font-size: 13px; font-weight: 600;")
                 self.next_button.setEnabled(True)
                 
                 # Device is detected but actual connection happens in Login step after authentication
             else:
-                self.status_label.setText("✗ No device found. Please check connection.")
-                self.status_label.setStyleSheet("color: #dc2626; font-size: 13px;")
+                self.status_label.setText(
+                    "✗ No headset found.\n\n"
+                    "Please ensure:\n"
+                    "1. The headset is added to device Bluetooth\n"
+                    "2. The amplifier is paired (not necessarily powered on yet)\n\n"
+                    "After pairing, please restart the application."
+                )
+                self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
                 self.connect_button.setEnabled(True)
         except Exception as e:
             self.status_label.setText(f"✗ Error: {str(e)}")
@@ -1325,8 +1500,18 @@ class LoginDialog(QDialog):
         if self._programmatic_close:
             event.accept()
         else:
-            event.ignore()
-            self.workflow.main_window.close()
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
     
     def toggle_password_visibility(self):
         """Toggle password visibility with eye icon"""
@@ -1481,7 +1666,7 @@ class LoginDialog(QDialog):
             self.workflow.main_window.log_message("✗ No MindLink device found!")
             return
         
-        self.workflow.main_window.log_message(f"✓ Found MindLink device: {port}")
+        self.workflow.main_window.log_message(f"✓ Connecting to MindLink device: {port}")
         
         # Start MindLink connection - EXACTLY like base GUI
         try:
@@ -1637,8 +1822,18 @@ class PathwaySelectionDialog(QDialog):
         if hasattr(self, '_programmatic_close') and self._programmatic_close:
             event.accept()
         else:
-            event.ignore()
-            self.workflow.main_window.close()
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
     
     def on_next(self):
         """Save protocol selection and proceed"""
@@ -1696,15 +1891,17 @@ class LiveEEGDialog(QDialog):
         # UI Elements
         title_label = QLabel("Live EEG Signal")
         title_label.setObjectName("DialogTitle")
+        title_label.setStyleSheet("font-size: 16px; font-weight: 600;")  # Reduced from 18px
         
         subtitle_label = QLabel("Step 4 of 8: Monitoring real brain activity")
         subtitle_label.setObjectName("DialogSubtitle")
+        subtitle_label.setStyleSheet("font-size: 11px;")  # Reduced from 13px
         
         # EEG Plot card
         plot_card = QFrame()
         plot_card.setObjectName("DialogCard")
         plot_layout = QVBoxLayout(plot_card)
-        plot_layout.setContentsMargins(8, 8, 8, 8)
+        plot_layout.setContentsMargins(4, 4, 4, 4)  # Reduced from 8, 8, 8, 8
         
         # Use the SAME plotting setup as the main GUI
         self.plot_widget = pg.PlotWidget()
@@ -1720,8 +1917,40 @@ class LiveEEGDialog(QDialog):
         
         # Status info
         self.info_label = QLabel("Signal quality: Good | Ensure proper electrode contact")
-        self.info_label.setStyleSheet("color: #10b981; font-size: 13px; padding: 8px;")
+        self.info_label.setStyleSheet("color: #10b981; font-size: 11px; padding: 6px;")  # Reduced from 13px, 8px
         self.info_label.setAlignment(Qt.AlignCenter)
+        
+        # Plotting delay information
+        delay_info = QLabel(
+            "ℹ️ Note: Visual display may lag 5-10 seconds behind real-time. "
+            "This delay is purely visual and does NOT affect data recording. "
+            "Task data is captured instantly through the feature engine as signals arrive. Please wait for upto 20 seconds for the signal to stabilize after wearing the headset."
+        )
+        delay_info.setStyleSheet(
+            "color: #475569; font-size: 10px; padding: 4px 8px; "  # Reduced from 11px, 6px 12px
+            "background: #f1f5f9; border-radius: 6px; "
+            "border-left: 3px solid #3b82f6;"
+        )
+        delay_info.setWordWrap(True)
+        delay_info.setAlignment(Qt.AlignLeft)
+        
+        # Device reconnection help button
+        self.reconnect_help_button = QPushButton("🔄 Device Disconnected?")
+        self.reconnect_help_button.setStyleSheet("""
+            QPushButton {
+                background-color: #fbbf24;
+                color: #78350f;
+                border-radius: 6px;
+                padding: 6px 12px;  
+                font-size: 11px;  
+                font-weight: 600;
+                border: 0;
+            }
+            QPushButton:hover {
+                background-color: #f59e0b;
+            }
+        """)
+        self.reconnect_help_button.clicked.connect(self.show_reconnect_guidance)
         
         # Navigation buttons
         nav_layout = QHBoxLayout()
@@ -1732,6 +1961,8 @@ class LiveEEGDialog(QDialog):
             QPushButton {
                 background-color: #e2e8f0;
                 color: #475569;
+                font-size: 11px;
+                padding: 6px 12px;
             }
             QPushButton:hover {
                 background-color: #cbd5e1;
@@ -1742,17 +1973,20 @@ class LiveEEGDialog(QDialog):
         nav_layout.addStretch()
         
         self.next_button = QPushButton("Next →")
+        self.next_button.setStyleSheet("font-size: 11px; padding: 6px 12px;")
         self.next_button.clicked.connect(self.on_next)
         nav_layout.addWidget(self.next_button)
         
         # Layout assembly
         layout = QVBoxLayout()
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
+        layout.setContentsMargins(16, 16, 16, 16)  # Reduced from 24
+        layout.setSpacing(12)  # Reduced from 18
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
         layout.addWidget(plot_card)
         layout.addWidget(self.info_label)
+        layout.addWidget(delay_info)
+        layout.addWidget(self.reconnect_help_button, alignment=Qt.AlignCenter)
         layout.addLayout(nav_layout)
         
         self.setLayout(layout)
@@ -1765,22 +1999,89 @@ class LiveEEGDialog(QDialog):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_plot)
         self.update_timer.start(50)  # 20 Hz update rate
+        
+        # Quality tracking for sustained poor signal detection
+        self.quality_history = []  # List of (timestamp, quality_score) tuples
+        self.poor_quality_threshold = 45
+        self.is_noisy = False
+        
         self._programmatic_close = False
     
     def update_plot(self):
-        """Update EEG plot with REAL data from live_data_buffer"""
+        """Update EEG plot with REAL data from live_data_buffer
+        
+        Note: This displays the most recent data for visual monitoring.
+        The plotting delay does NOT affect task recording - tasks record data
+        in real-time through the feature_engine which processes data immediately
+        as it arrives via the onRaw callback. This plot is purely for visualization.
+        """
         # Use the REAL data buffer from the base GUI
-        if len(BL.live_data_buffer) >= 500:
-            data = np.array(BL.live_data_buffer[-500:])
-            self.curve.setData(data)
+        if len(BL.live_data_buffer) >= 512:
+            import time
+            data = np.array(BL.live_data_buffer[-512:])
+            self.curve.setData(data[-500:])  # Plot last 500 for display
             
-            # Update status based on signal quality
-            if np.std(data) > 100:
-                self.info_label.setText("⚠ High noise detected | Check electrode contact")
+            # Professional signal quality assessment
+            quality_score, status, details = assess_eeg_signal_quality(data, fs=512)
+            
+            # Track quality history (timestamp, score)
+            current_time = time.time()
+            self.quality_history.append((current_time, quality_score))
+            
+            # Remove entries older than 5 seconds
+            self.quality_history = [(t, q) for t, q in self.quality_history if current_time - t <= 5.0]
+            
+            # Count how many times quality dropped to or below threshold in last 5 seconds
+            poor_count = sum(1 for t, q in self.quality_history if q <= self.poor_quality_threshold)
+            
+            # Update noisy state: need 5+ poor readings in 5 seconds to trigger
+            if poor_count >= 5:
+                self.is_noisy = True
+            elif poor_count == 0:  # All recent readings good - reset
+                self.is_noisy = False
+            # Otherwise maintain current state (hysteresis)
+            
+            # Display only two states: Good or Noisy
+            if self.is_noisy:
+                self.info_label.setText("⚠ Signal quality: Noisy | Try: Adjust headset • Check electrode contact • Minimize movement")
                 self.info_label.setStyleSheet("color: #f59e0b; font-size: 13px; padding: 8px;")
             else:
-                self.info_label.setText("Signal quality: Good | Data flowing normally")
+                self.info_label.setText(f"✓ Signal quality: Good ({quality_score}%) | Data flowing normally")
                 self.info_label.setStyleSheet("color: #10b981; font-size: 13px; padding: 8px;")
+        elif len(BL.live_data_buffer) == 0:
+            # Device disconnected or no data
+            self.info_label.setText("⚠ No signal detected | Device may be disconnected")
+            self.info_label.setStyleSheet("color: #ef4444; font-size: 13px; padding: 8px;")
+    
+    def show_reconnect_guidance(self):
+        """Show guidance for reconnecting device"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("Device Reconnection Guide")
+        msg.setText("If your device is disconnected or signal stopped:")
+        msg.setInformativeText(
+            "<b>Quick Fix Steps:</b><br><br>"
+            "1. <b>Switch off</b> the BrainLink amplifier<br>"
+            "2. Wait 3-5 seconds<br>"
+            "3. <b>Switch on</b> the amplifier<br>"
+            "4. Click <b>Back</b> button below<br>"
+            "5. Navigate back to <b>Login screen</b><br>"
+            "6. <b>Log in again</b> to reconnect the device<br><br>"
+            "<i>Note: The app needs to re-establish the connection "
+            "after the device has been power-cycled.</i><br><br>"
+            "<b>Alternative:</b> Close and restart the application."
+        )
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #f8fafc;
+            }
+            QLabel {
+                color: #1f2937;
+                font-size: 13px;
+            }
+        """)
+        msg.exec()
     
     def on_back(self):
         """Navigate back"""
@@ -1804,8 +2105,18 @@ class LiveEEGDialog(QDialog):
         if hasattr(self, '_programmatic_close') and self._programmatic_close:
             event.accept()
         else:
-            event.ignore()
-            self.workflow.main_window.close()
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
 
 
 # ============================================================================
@@ -1813,7 +2124,7 @@ class LiveEEGDialog(QDialog):
 # ============================================================================
 
 class CalibrationDialog(QDialog):
-    """Step 6: Real eyes-closed and eyes-open calibration"""
+    """Step 6: Enhanced calibration with preparatory guidance"""
     
     def __init__(self, workflow: WorkflowManager, parent=None):
         super().__init__(parent)
@@ -1821,7 +2132,7 @@ class CalibrationDialog(QDialog):
         self.setWindowTitle("MindLink - Calibration")
         self.setModal(False)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(600)
         
         # Set window icon
         set_window_icon(self)
@@ -1829,6 +2140,7 @@ class CalibrationDialog(QDialog):
         # Get REAL feature engine
         self.feature_engine = self.workflow.main_window.feature_engine
         self.current_phase = None
+        self.countdown_value = 0
         
         # UI Elements
         title_label = QLabel("Baseline Calibration")
@@ -1844,16 +2156,22 @@ class CalibrationDialog(QDialog):
         instr_layout.setContentsMargins(16, 16, 16, 16)
         instr_layout.setSpacing(12)
         
-        instr_text = QLabel(
-            "We will record your baseline brain activity in two phases:\n\n"
-            "1. Eyes Closed (30s): Close your eyes and relax\n"
-            "2. Eyes Open (30s): Keep eyes open, stay relaxed\n\n"
-            "Click 'Start Eyes Closed' to begin."
-        )
-        instr_text.setWordWrap(True)
-        instr_text.setStyleSheet("font-size: 13px; color: #475569; line-height: 1.6;")
+        # instr_text = QLabel(
+        #     "<b>Calibration Overview:</b><br><br>"
+        #     "We will record your baseline brain activity in two phases:<br><br>"
+        #     "<b>1. Eyes Closed (30s)</b>: Relax with eyes closed<br>"
+        #     "<b>2. Eyes Open (30s)</b>: Stay relaxed, eyes open<br><br>"
+        #     "Each phase includes:<br>"
+        #     "• Preparation guidance<br>"
+        #     "• Audio countdown (5, 4, 3, 2, 1)<br>"
+        #     "• 30-second silent recording<br>"
+        #     "• Audio notification when complete<br><br>"
+        #     "<i>Tip: Ensure your speakers/headphones are on!</i>"
+        # )
+        # instr_text.setWordWrap(True)
+        # instr_text.setStyleSheet("font-size: 13px; color: #475569; line-height: 1.8;")
         
-        instr_layout.addWidget(instr_text)
+        # instr_layout.addWidget(instr_text)
         
         # Progress card
         progress_card = QFrame()
@@ -1868,17 +2186,29 @@ class CalibrationDialog(QDialog):
         self.phase_label = QLabel("")
         self.phase_label.setStyleSheet("font-size: 13px; color: #64748b;")
         
-        self.ec_button = QPushButton("Start Eyes Closed (30s)")
-        self.ec_button.clicked.connect(self.start_eyes_closed)
-        self.ec_button.setStyleSheet("padding: 10px;")
+        # Signal quality indicator
+        self.signal_quality_label = QLabel("Signal quality: Checking...")
+        self.signal_quality_label.setStyleSheet(
+            "font-size: 12px; color: #6b7280; padding: 6px; "
+            "background: #f3f4f6; border-radius: 4px;"
+        )
         
-        self.eo_button = QPushButton("Start Eyes Open (30s)")
-        self.eo_button.clicked.connect(self.start_eyes_open)
+        self.ec_button = QPushButton("🎯 Start Eyes Closed Calibration")
+        self.ec_button.clicked.connect(self.show_eyes_closed_prep)
+        self.ec_button.setStyleSheet(
+            "padding: 12px; font-size: 14px; font-weight: 600;"
+        )
+        
+        self.eo_button = QPushButton("🎯 Start Eyes Open Calibration")
+        self.eo_button.clicked.connect(self.show_eyes_open_prep)
         self.eo_button.setEnabled(False)
-        self.eo_button.setStyleSheet("padding: 10px;")
+        self.eo_button.setStyleSheet(
+            "padding: 12px; font-size: 14px; font-weight: 600;"
+        )
         
         progress_layout.addWidget(self.status_label)
         progress_layout.addWidget(self.phase_label)
+        progress_layout.addWidget(self.signal_quality_label)
         progress_layout.addWidget(self.ec_button)
         progress_layout.addWidget(self.eo_button)
         
@@ -1921,58 +2251,427 @@ class CalibrationDialog(QDialog):
         # Add MindLink status bar
         self.status_bar = add_status_bar_to_dialog(self, self.workflow.main_window)
         
+        # Signal quality monitoring timer
+        self.signal_timer = QTimer()
+        self.signal_timer.timeout.connect(self.update_signal_quality)
+        self.signal_timer.start(500)  # Update every 500ms
+        
         # Auto-stop timer
         self.auto_stop_timer = QTimer()
         self.auto_stop_timer.setSingleShot(True)
         self.auto_stop_timer.timeout.connect(self.auto_stop_phase)
+        
+        # Countdown timer
+        self.countdown_timer = QTimer()
+        self.countdown_timer.timeout.connect(self.update_countdown)
+        
+        # Quality tracking for sustained poor signal detection
+        self.quality_history = []  # List of (timestamp, quality_score) tuples
+        self.poor_quality_threshold = 45
+        self.is_noisy = False
+        
         self._programmatic_close = False
     
+    def update_signal_quality(self):
+        """Update signal quality indicator using professional multi-metric assessment"""
+        try:
+            if len(BL.live_data_buffer) >= 512:
+                import time
+                # Use proper window size for signal analysis
+                data = np.array(list(BL.live_data_buffer)[-512:])
+                
+                # Professional signal quality assessment
+                quality_score, status, details = assess_eeg_signal_quality(data, fs=512)
+                
+                # Track quality history (timestamp, score)
+                current_time = time.time()
+                self.quality_history.append((current_time, quality_score))
+                
+                # Remove entries older than 5 seconds
+                self.quality_history = [(t, q) for t, q in self.quality_history if current_time - t <= 5.0]
+                
+                # Count how many times quality dropped to or below threshold in last 5 seconds
+                poor_count = sum(1 for t, q in self.quality_history if q <= self.poor_quality_threshold)
+                
+                # Update noisy state: need 5+ poor readings in 5 seconds to trigger
+                if poor_count >= 5:
+                    self.is_noisy = True
+                elif poor_count == 0:  # All recent readings good - reset
+                    self.is_noisy = False
+                # Otherwise maintain current state (hysteresis)
+                
+                # Display only two states: Good or Noisy
+                if self.is_noisy:
+                    self.signal_quality_label.setText("⚠ Signal: Noisy")
+                    self.signal_quality_label.setStyleSheet(
+                        "font-size: 12px; color: #d97706; padding: 6px; "
+                        "background: #fef3c7; border-radius: 4px; font-weight: 600;"
+                    )
+                else:
+                    self.signal_quality_label.setText(f"✓ Signal: Good ({quality_score}%)")
+                    self.signal_quality_label.setStyleSheet(
+                        "font-size: 12px; color: #059669; padding: 6px; "
+                        "background: #d1fae5; border-radius: 4px; font-weight: 600;"
+                    )
+            else:
+                self.signal_quality_label.setText("○ Signal: Waiting...")
+                self.signal_quality_label.setStyleSheet(
+                    "font-size: 12px; color: #6b7280; padding: 6px; "
+                    "background: #f3f4f6; border-radius: 4px;"
+                )
+        except Exception as e:
+            # Fallback on error
+            self.signal_quality_label.setText("⚠ Signal: Error")
+            self.signal_quality_label.setStyleSheet(
+                "font-size: 12px; color: #dc2626; padding: 6px; "
+                "background: #fef2f2; border-radius: 4px;"
+            )
+    
+    def show_eyes_closed_prep(self):
+        """Show preparation dialog for eyes closed calibration"""
+        prep_dialog = QDialog(self)
+        prep_dialog.setWindowTitle("Eyes Closed Calibration - Get Ready")
+        prep_dialog.setModal(True)
+        prep_dialog.setMinimumWidth(500)
+        set_window_icon(prep_dialog)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        
+        # Title
+        title = QLabel("🌙 Eyes Closed Baseline")
+        title.setStyleSheet(
+            "font-size: 18px; font-weight: 600; color: #1f2937; margin-bottom: 8px;"
+        )
+        title.setAlignment(Qt.AlignCenter)
+        
+        # Instructions
+        instructions = QLabel(
+            "<b>Get ready to close your eyes and relax.</b><br><br>"
+            "The sensors will record your baseline brainwave pattern for 30 seconds.<br><br>"
+            "<b>What will happen:</b><br>"
+            "1. Click 'Start Recording' below<br>"
+            "2. You'll hear a countdown: <i>5, 4, 3, 2, 1 in beep sound</i><br>"
+            "3. Close your eyes and relax for 30 seconds<br>"
+            "4. Stay still and calm - don't think about anything specific<br>"
+            "5. A sound will notify you when the 30 seconds are complete<br><br>"
+            "<b style='color: #dc2626;'>⚠ Important: Check your speakers/headphones are ON!</b>"
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet(
+            "font-size: 13px; color: #475569; line-height: 1.8; "
+            "padding: 16px; background: #f8fafc; border-radius: 8px;"
+        )
+        
+        # Signal quality in prep dialog - dynamic assessment
+        signal_label = QLabel("Signal quality: Checking...")
+        signal_label.setStyleSheet(
+            "font-size: 13px; color: #6b7280; padding: 8px; "
+            "background: #f3f4f6; border-radius: 6px; font-weight: 600;"
+        )
+        signal_label.setAlignment(Qt.AlignCenter)
+        
+        # Local quality history for prep dialog
+        prep_quality_history = []
+        
+        # Update signal quality dynamically
+        def update_prep_signal():
+            import time
+            if len(BL.live_data_buffer) >= 512:
+                data = np.array(list(BL.live_data_buffer)[-512:])
+                quality_score, status, details = assess_eeg_signal_quality(data, fs=512)
+                
+                # Track quality locally
+                current_time = time.time()
+                prep_quality_history.append((current_time, quality_score))
+                # Remove entries older than 5 seconds
+                while prep_quality_history and current_time - prep_quality_history[0][0] > 5.0:
+                    prep_quality_history.pop(0)
+                
+                poor_count = sum(1 for t, q in prep_quality_history if q <= self.poor_quality_threshold)
+                
+                if poor_count >= 5:
+                    signal_label.setText("⚠ Signal: Noisy")
+                    signal_label.setStyleSheet(
+                        "font-size: 13px; color: #d97706; padding: 8px; "
+                        "background: #fef3c7; border-radius: 6px; font-weight: 600;"
+                    )
+                else:
+                    signal_label.setText(f"✓ Signal: Good ({quality_score}%)")
+                    signal_label.setStyleSheet(
+                        "font-size: 13px; color: #059669; padding: 8px; "
+                        "background: #d1fae5; border-radius: 6px; font-weight: 600;"
+                    )
+            else:
+                signal_label.setText("○ Signal: Waiting...")
+                signal_label.setStyleSheet(
+                    "font-size: 13px; color: #6b7280; padding: 8px; "
+                    "background: #f3f4f6; border-radius: 6px; font-weight: 600;"
+                )
+        
+        # Timer to update signal quality in prep dialog
+        prep_timer = QTimer(prep_dialog)
+        prep_timer.timeout.connect(update_prep_signal)
+        prep_timer.start(500)
+        update_prep_signal()  # Initial update
+        
+        # Start button
+        start_btn = QPushButton("▶ Start Recording")
+        start_btn.setStyleSheet(
+            "padding: 12px 24px; font-size: 14px; font-weight: 600; "
+            "background-color: #2563eb; border-radius: 8px;"
+        )
+        start_btn.clicked.connect(lambda: (prep_dialog.accept(), self.start_eyes_closed()))
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(
+            "padding: 10px 20px; font-size: 13px; "
+            "background-color: #e2e8f0; color: #475569; border-radius: 6px;"
+        )
+        cancel_btn.clicked.connect(prep_dialog.reject)
+        
+        # Button layout
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(start_btn)
+        
+        layout.addWidget(title)
+        layout.addWidget(instructions)
+        layout.addWidget(signal_label)
+        layout.addSpacing(8)
+        layout.addLayout(btn_layout)
+        
+        prep_dialog.setLayout(layout)
+        apply_modern_dialog_theme(prep_dialog)
+        prep_dialog.exec()
+    
     def start_eyes_closed(self):
-        """Start REAL eyes-closed calibration"""
+        """Start eyes-closed calibration with countdown"""
         self.current_phase = 'eyes_closed'
-        self.status_label.setText("Recording: Eyes Closed")
-        self.phase_label.setText("Close your eyes and relax... (30 seconds)")
+        self.status_label.setText("⏳ Countdown starting...")
+        self.phase_label.setText("Get ready! Listen for the countdown...")
         self.ec_button.setEnabled(False)
+        self.back_button.setEnabled(False)
         
-        # Use REAL calibration from feature engine
-        self.feature_engine.start_calibration_phase('eyes_closed')
+        print("[CalibrationDialog] Initiating eyes_closed calibration...")
         
-        # Auto-stop after 30 seconds (matching base GUI)
-        self.auto_stop_timer.start(30000)
+        # Start audio countdown
+        self.countdown_value = 5
+        self.start_countdown_sequence('eyes_closed')
+    
+    def start_countdown_sequence(self, phase):
+        """Run audio countdown sequence"""
+        # Store the phase we're counting down for
+        self.countdown_phase = phase
+        self.countdown_timer.start(1000)  # 1 second intervals
+    
+    def update_countdown(self):
+        """Update countdown display and play audio"""
+        if self.countdown_value > 0:
+            self.status_label.setText(f"⏳ Countdown: {self.countdown_value}")
+            self.phase_label.setText(f"Listening to audio: {self.countdown_value}...")
+            # Play countdown beep
+            try:
+                import winsound
+                winsound.Beep(800, 200)  # 800Hz, 200ms
+            except:
+                pass
+            self.countdown_value -= 1
+        else:
+            # Countdown finished, start actual recording
+            self.countdown_timer.stop()
+            # Use countdown_phase instead of current_phase to ensure correct phase starts
+            if self.countdown_phase == 'eyes_closed':
+                self.status_label.setText("🎬 Recording: Eyes Closed")
+                self.phase_label.setText("Close your eyes and relax... (30 seconds)")
+                self.feature_engine.start_calibration_phase('eyes_closed')
+                print("[CalibrationDialog] Started eyes_closed phase")
+            elif self.countdown_phase == 'eyes_open':
+                self.status_label.setText("🎬 Recording: Eyes Open")
+                self.phase_label.setText("Keep your eyes open and stay relaxed... (30 seconds)")
+                self.feature_engine.start_calibration_phase('eyes_open')
+                print("[CalibrationDialog] Started eyes_open phase")
+            
+            # Auto-stop after 30 seconds
+            self.auto_stop_timer.start(30000)
+    
+    def show_eyes_open_prep(self):
+        """Show preparation dialog for eyes open calibration"""
+        prep_dialog = QDialog(self)
+        prep_dialog.setWindowTitle("Eyes Open Calibration - Get Ready")
+        prep_dialog.setModal(True)
+        prep_dialog.setMinimumWidth(500)
+        set_window_icon(prep_dialog)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        
+        # Title
+        title = QLabel("👁️ Eyes Open Baseline")
+        title.setStyleSheet(
+            "font-size: 18px; font-weight: 600; color: #1f2937; margin-bottom: 8px;"
+        )
+        title.setAlignment(Qt.AlignCenter)
+        
+        # Instructions
+        instructions = QLabel(
+            "<b>Get ready to keep your eyes open and stay relaxed.</b><br><br>"
+            "The sensors will record your eyes-open baseline for 30 seconds.<br><br>"
+            "<b>What will happen:</b><br>"
+            "1. Click 'Start Recording' below<br>"
+            "2. You'll hear a countdown: <i>5, 4, 3, 2, 1 in beep sound</i><br>"
+            "3. Keep your eyes open and relax for 30 seconds<br>"
+            "4. Stay calm - look ahead calmly, minimize blinking<br>"
+            "5. A sound will notify you when the 30 seconds are complete<br><br>"
+            "<b style='color: #dc2626;'>⚠ Important: Keep eyes open but stay relaxed!</b>"
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet(
+            "font-size: 13px; color: #475569; line-height: 1.8; "
+            "padding: 16px; background: #f8fafc; border-radius: 8px;"
+        )
+        
+        # Signal quality - dynamic assessment
+        signal_label = QLabel("Signal quality: Checking...")
+        signal_label.setStyleSheet(
+            "font-size: 13px; color: #6b7280; padding: 8px; "
+            "background: #f3f4f6; border-radius: 6px; font-weight: 600;"
+        )
+        signal_label.setAlignment(Qt.AlignCenter)
+        
+        # Local quality history for prep dialog
+        prep_quality_history = []
+        
+        # Update signal quality dynamically
+        def update_prep_signal():
+            import time
+            if len(BL.live_data_buffer) >= 512:
+                data = np.array(list(BL.live_data_buffer)[-512:])
+                quality_score, status, details = assess_eeg_signal_quality(data, fs=512)
+                
+                # Track quality locally
+                current_time = time.time()
+                prep_quality_history.append((current_time, quality_score))
+                # Remove entries older than 5 seconds
+                while prep_quality_history and current_time - prep_quality_history[0][0] > 5.0:
+                    prep_quality_history.pop(0)
+                
+                poor_count = sum(1 for t, q in prep_quality_history if q <= self.poor_quality_threshold)
+                
+                if poor_count >= 5:
+                    signal_label.setText("⚠ Signal: Noisy")
+                    signal_label.setStyleSheet(
+                        "font-size: 13px; color: #d97706; padding: 8px; "
+                        "background: #fef3c7; border-radius: 6px; font-weight: 600;"
+                    )
+                else:
+                    signal_label.setText(f"✓ Signal: Good ({quality_score}%)")
+                    signal_label.setStyleSheet(
+                        "font-size: 13px; color: #059669; padding: 8px; "
+                        "background: #d1fae5; border-radius: 6px; font-weight: 600;"
+                    )
+            else:
+                signal_label.setText("○ Signal: Waiting...")
+                signal_label.setStyleSheet(
+                    "font-size: 13px; color: #6b7280; padding: 8px; "
+                    "background: #f3f4f6; border-radius: 6px; font-weight: 600;"
+                )
+        
+        # Timer to update signal quality in prep dialog
+        prep_timer = QTimer(prep_dialog)
+        prep_timer.timeout.connect(update_prep_signal)
+        prep_timer.start(500)
+        update_prep_signal()  # Initial update
+        
+        # Start button
+        start_btn = QPushButton("▶ Start Recording")
+        start_btn.setStyleSheet(
+            "padding: 12px 24px; font-size: 14px; font-weight: 600; "
+            "background-color: #2563eb; border-radius: 8px;"
+        )
+        start_btn.clicked.connect(lambda: (prep_dialog.accept(), self.start_eyes_open()))
+        
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(
+            "padding: 10px 20px; font-size: 13px; "
+            "background-color: #e2e8f0; color: #475569; border-radius: 6px;"
+        )
+        cancel_btn.clicked.connect(prep_dialog.reject)
+        
+        # Button layout
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(start_btn)
+        
+        layout.addWidget(title)
+        layout.addWidget(instructions)
+        layout.addWidget(signal_label)
+        layout.addSpacing(8)
+        layout.addLayout(btn_layout)
+        
+        prep_dialog.setLayout(layout)
+        apply_modern_dialog_theme(prep_dialog)
+        prep_dialog.exec()
     
     def start_eyes_open(self):
-        """Start REAL eyes-open calibration"""
+        """Start eyes-open calibration with countdown"""
         self.current_phase = 'eyes_open'
-        self.status_label.setText("Recording: Eyes Open")
-        self.phase_label.setText("Keep your eyes open and stay relaxed... (30 seconds)")
+        self.status_label.setText("⏳ Countdown starting...")
+        self.phase_label.setText("Get ready! Listen for the countdown...")
         self.eo_button.setEnabled(False)
+        self.back_button.setEnabled(False)
         
-        # Use REAL calibration from feature engine
-        self.feature_engine.start_calibration_phase('eyes_open')
+        print("[CalibrationDialog] Initiating eyes_open calibration...")
         
-        # Auto-stop after 30 seconds (matching base GUI)
-        self.auto_stop_timer.start(30000)
+        # Start audio countdown
+        self.countdown_value = 5
+        self.start_countdown_sequence('eyes_open')
     
     def auto_stop_phase(self):
-        """Auto-stop current calibration phase"""
+        """Auto-stop current calibration phase with completion notification"""
         # Check if dialog is still valid (not closed)
         if not self.isVisible():
             print("Dialog not visible, skipping auto_stop_phase")
             return
+        
+        # Play completion sound (4 beeps)
+        try:
+            import winsound
+            for _ in range(4):
+                winsound.Beep(1000, 150)
+                QTimer.singleShot(200, lambda: None)  # Brief pause
+        except:
+            pass
             
         try:
             # Stop the calibration phase
             self.feature_engine.stop_calibration_phase()
             
             if self.current_phase == 'eyes_closed':
-                self.status_label.setText("✓ Eyes Closed Complete")
-                self.phase_label.setText("Phase 1 complete. Ready for phase 2 (optional).")
+                self.status_label.setText("✅ Eyes Closed Complete!")
+                self.phase_label.setText("Great! Now let's record with eyes open.")
                 self.eo_button.setEnabled(True)
-                # Enable Next button after eyes-closed (eyes-open is optional)
-                self.next_button.setEnabled(True)
+                self.back_button.setEnabled(True)
+                
+                # Show completion message
+                QMessageBox.information(
+                    self,
+                    "Eyes Closed Complete",
+                    "<b>Eyes Closed calibration finished!</b><br><br>"
+                    "You can now proceed to the Eyes Open calibration.<br><br>"
+                    "Click 'Start Eyes Open Calibration' when ready.",
+                    QMessageBox.Ok
+                )
             elif self.current_phase == 'eyes_open':
-                self.status_label.setText("✓ Calibration Complete")
-                self.phase_label.setText("Both phases complete. Computing baseline statistics...")
+                self.status_label.setText("✅ Calibration Complete!")
+                self.phase_label.setText("Both baseline phases recorded successfully!")
+                self.back_button.setEnabled(True)
                 
                 # Compute REAL baseline statistics
                 try:
@@ -1983,6 +2682,16 @@ class CalibrationDialog(QDialog):
                     self.phase_label.setText("Both phases complete. Baseline computed with warnings.")
                 
                 self.next_button.setEnabled(True)
+                
+                # Show completion message
+                QMessageBox.information(
+                    self,
+                    "Calibration Complete",
+                    "<b>Excellent! Baseline calibration is complete!</b><br><br>"
+                    "Both Eyes Closed and Eyes Open baselines have been recorded.<br><br>"
+                    "Click 'Next' to proceed to the task selection.",
+                    QMessageBox.Ok
+                )
         except Exception as e:
             print(f"Error in auto_stop_phase: {e}")
             import traceback
@@ -2020,9 +2729,13 @@ class CalibrationDialog(QDialog):
     def closeEvent(self, event):
         """Handle dialog close - distinguish between user X click and programmatic close"""
         try:
-            # Stop timer and calibration if active
+            # Stop all timers
             if hasattr(self, 'auto_stop_timer') and self.auto_stop_timer.isActive():
                 self.auto_stop_timer.stop()
+            if hasattr(self, 'countdown_timer') and self.countdown_timer.isActive():
+                self.countdown_timer.stop()
+            if hasattr(self, 'signal_timer') and self.signal_timer.isActive():
+                self.signal_timer.stop()
             
             if hasattr(self, 'current_phase') and self.current_phase:
                 try:
@@ -2110,9 +2823,12 @@ class TaskSelectionDialog(QDialog):
         task_label.setObjectName("DialogSectionTitle")
         
         self.task_combo = QComboBox()
-        # Use FILTERED task IDs, not all tasks
-        self.task_combo.addItems(self.available_task_ids)
-        self.task_combo.currentTextChanged.connect(self.update_task_preview)
+        # Populate with task names as display text and task IDs as data
+        for task_id in self.available_task_ids:
+            if task_id in BL.AVAILABLE_TASKS:
+                task_name = BL.AVAILABLE_TASKS[task_id].get('name', task_id)
+                self.task_combo.addItem(task_name, task_id)  # Display name, store ID as data
+        self.task_combo.currentIndexChanged.connect(self.update_task_preview)
         
         task_layout.addWidget(task_label)
         task_layout.addWidget(self.task_combo)
@@ -2143,6 +2859,9 @@ class TaskSelectionDialog(QDialog):
         self.completed_label = QLabel()
         self.completed_label.setStyleSheet("font-size: 12px; color: #64748b; padding: 8px;")
         self.update_completed_tasks_display()
+        
+        # Initial task preview update
+        self.update_task_preview()
         
         # Navigation buttons
         nav_layout = QHBoxLayout()
@@ -2213,15 +2932,26 @@ class TaskSelectionDialog(QDialog):
             # User clicked X button - show confirmation
             if self.status_bar:
                 self.status_bar.cleanup()
-            event.ignore()
-            self.workflow.main_window.close()
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
     
     def update_task_preview(self):
         """Update task description preview"""
-        task_id = self.task_combo.currentText()  # Now this is a task ID, not a name
+        # Get task ID from combo box data (not the display text)
+        task_id = self.task_combo.currentData()
         
         # Get task info from BL.AVAILABLE_TASKS using task_id
-        if task_id in BL.AVAILABLE_TASKS:
+        if task_id and task_id in BL.AVAILABLE_TASKS:
             task_info = BL.AVAILABLE_TASKS[task_id]
             task_name = task_info.get('name', task_id)
             desc = task_info.get('description', '')
@@ -2240,7 +2970,8 @@ class TaskSelectionDialog(QDialog):
     
     def start_selected_task(self):
         """Launch the REAL task using main window's start_task method"""
-        task_id = self.task_combo.currentText()  # Now this is already a task ID
+        # Get task ID from combo box data (not the display text)
+        task_id = self.task_combo.currentData()
         
         # Verify task_id exists
         if not task_id or task_id not in BL.AVAILABLE_TASKS:
@@ -2463,6 +3194,7 @@ class MultiTaskAnalysisDialog(QDialog):
         
         self.finish_button = QPushButton("Finish")
         self.finish_button.clicked.connect(self.on_finish)
+        self.finish_button.setEnabled(False)  # Disabled until analysis completes
         nav_layout.addWidget(self.finish_button)
         
         # Layout assembly
@@ -2491,8 +3223,18 @@ class MultiTaskAnalysisDialog(QDialog):
             # User clicked X button - show confirmation
             if self.status_bar:
                 self.status_bar.cleanup()
-            event.ignore()
-            self.workflow.main_window.close()
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?\\n\\nAll unsaved analysis data will be lost.',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                event.accept()
+                QtWidgets.QApplication.quit()
+            else:
+                event.ignore()
     
     def _center_on_screen(self):
         """Center the dialog on the screen"""
@@ -2765,9 +3507,10 @@ class MultiTaskAnalysisDialog(QDialog):
             
             print(f">>> [MAIN THREAD] Setting results text (length: {len(results)} chars) <<<")
             self.results_text.setPlainText(results)
-            print(f">>> [MAIN THREAD] Enabling report buttons <<<")
+            print(f">>> [MAIN THREAD] Enabling report buttons and finish button <<<")
             self.report_button.setEnabled(True)
             self.seed_button.setEnabled(True)
+            self.finish_button.setEnabled(True)  # Enable finish button after successful analysis
             print(f">>> [MAIN THREAD] Results displayed successfully <<<")
         else:
             print(f">>> [MAIN THREAD] No results found - showing error message <<<")

@@ -1,19 +1,74 @@
-altgraph==0.17.4
+﻿# BrainLinkCompanion - Python requirements
+#
+# This file lists the core Python packages used by the project and
+# provides a straightforward way for other developers to create a
+# reproducible virtual environment for development and packaging.
+#
+# Quick start (Windows PowerShell):
+#  python -m venv .venv
+#  .\.venv\Scripts\Activate.ps1
+#  python -m pip install --upgrade pip setuptools wheel
+#  python -m pip install -r requirements.txt
+#
+# Quick start (macOS / Linux):
+#  python3 -m venv .venv
+#  source .venv/bin/activate
+#  python -m pip install --upgrade pip setuptools wheel
+#  python -m pip install -r requirements.txt
+#
+# Notes:
+# - Versions are pinned to provide reproducible installs across machines.
+# - Some packages (PyInstaller, pyserial) are required for packaging and
+#   interacting with the BrainLink device. If you only plan to run the
+#   GUI in development, you can omit PyInstaller but it's included here
+#   because the repository contains packaging scripts.
+# - On Windows, run PowerShell as Administrator if you encounter permission errors.
+
+# Core numerical / scientific
+numpy==1.28.5
+scipy==1.11.4
+
+# Qt bindings (choose one: PyQt6 or PySide6). Both are listed so the
+# developer can choose; if you want only one, remove the other.
+PyQt6==6.6.3
+PySide6==6.8.0
+pyqtgraph==0.13.4
+
+# Networking / HTTP
+requests==2.32.3
 certifi==2025.1.31
+urllib3==2.3.0
 charset-normalizer==3.4.1
-cushy-serial==1.1.1
 idna==3.10
-packaging==24.2
-pefile==2023.2.7
-pip==25.0
-pyasn1==0.6.1
+
+# Device / Serial / Audio
+pyserial==3.5
+cushy-serial==1.1.1
+pygame==2.5.2
+
+# GUI helpers & packaging
+PySimpleGUI==5.0.8.3
 pyinstaller==6.12.0
 pyinstaller-hooks-contrib==2025.1
-pyserial==3.5
-PySimpleGUI==5.0.8.3
-pywin32-ctypes==0.2.3
-requests==2.32.3
-rsa==4.9
-setuptools==75.8.0
-urllib3==2.3.0
+
+# Optional / tooling (useful during development)
+python-dotenv==1.1.0
+packaging==24.2
 wheel==0.45.1
+setuptools==75.8.0
+
+# Security / auth
+rsa==4.9
+pyasn1==0.6.1
+
+# Pin pip for reproducible environment creation
+pip==25.0
+
+# Platform-specific notes (not interpreted by pip):
+# - On Windows, install the Microsoft Visual C++ Build Tools if you need to
+#   compile packages from source. Many wheels are available, however.
+# - If you prefer only PySide6 (not PyQt6), remove PyQt6 from the list above.
+# - If packaging to a single executable, make sure to build inside a clean
+#   virtual environment that matches your target Python version.
+
+# End of file

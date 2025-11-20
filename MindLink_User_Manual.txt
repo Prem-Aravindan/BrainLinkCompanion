@@ -1,0 +1,1174 @@
+================================================================================
+                    MINDLINK ANALYZER - USER MANUAL
+                    Brain Wave Recording Protocol
+                          Version 2.0 (2025)
+
+1. INTRODUCTION
+===============
+
+Welcome to MindLink Analyzer - a professional brain-computer interface (BCI) 
+application for recording and analyzing EEG (electroencephalography) signals.
+
+This application allows you to:
+- Monitor real-time brain activity through EEG signals
+- Perform standardized cognitive tasks
+- Establish personalized baseline measurements
+- Analyze cognitive performance across multiple dimensions
+- Generate comprehensive reports with statistical analysis
+
+The MindLink Analyzer uses advanced signal processing and feature extraction 
+to provide insights into your cognitive state, attention levels, and mental 
+performance patterns.
+
+
+================================================================================
+
+
+2. SYSTEM REQUIREMENTS
+======================
+
+Hardware Requirements:
+- MindLink EEG headset device
+- USB cable for device connection
+- Windows PC or macOS computer
+- Minimum 4GB RAM
+- Screen resolution: 1280x720 or higher
+
+Software Requirements:
+- Windows 10/11 or macOS 10.14+
+- Python 3.8 or higher (for source version)
+- Active internet connection (for authentication)
+- Valid MindSpeller account credentials
+
+Device Requirements:
+- Fully charged MindLink headset (battery > 20%)
+- Clean electrode contacts
+- Proper headset placement on forehead
+
+
+================================================================================
+
+
+3. GETTING STARTED
+==================
+
+Before You Begin:
+
+1. Charge Your Device
+   - Ensure your MindLink headset is fully charged
+   - Check battery indicator shows at least 50% charge
+   - Connect to power if battery is low
+
+2. Prepare Your Environment
+   - Find a quiet, comfortable location
+   - Minimize distractions and interruptions
+   - Ensure good lighting for task visibility
+   - Have your login credentials ready
+
+3. Device Setup
+   - Clean the electrode contacts with a soft cloth
+   - Position the headset comfortably on your forehead
+   - Ensure the electrodes make good contact with your skin
+   - Connect the device to your computer via USB
+
+4. Launch the Application
+   - Double-click the MindLink Analyzer icon
+   - Wait for the application to initialize
+   - The welcome screen will appear automatically
+
+
+================================================================================
+
+
+4. APPLICATION WORKFLOW OVERVIEW
+=================================
+
+The MindLink Analyzer follows a sequential 8-step workflow:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 1: Operating System Selection                     │
+  │  Select your computer's operating system                │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 2: Environment & Device Connection                │
+  │  Choose region and connect to MindLink device           │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 3: User Authentication                            │
+  │  Sign in with your MindSpeller account credentials      │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 4: Live EEG Signal Monitoring                     │
+  │  Verify real-time brain activity signal quality         │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 5: Pathway Selection                              │
+  │  Choose your task protocol (Personal/Connection/        │
+  │  Lifestyle)                                             │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 6: Baseline Calibration                           │
+  │  Record eyes-closed and eyes-open baseline activity     │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 7: Cognitive Task Selection & Execution           │
+  │  Perform selected cognitive tasks                       │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  STEP 8: Multi-Task Analysis & Report Generation        │
+  │  Analyze results and generate comprehensive report      │
+  └─────────────────────────────────────────────────────────┘
+
+At any step, you can:
+- Navigate back using the "← Back" button
+- View your connection status in the header
+- Monitor battery level and signal quality
+- Exit the application (with confirmation prompt)
+
+
+================================================================================
+
+
+5. STEP-BY-STEP INSTRUCTIONS
+=============================
+
+
+5.1  STEP 1: OPERATING SYSTEM SELECTION
+----------------------------------------
+
+Window Title: "MindLink - Operating System"
+Step: 1 of 8
+
+Purpose:
+This step identifies your computer's operating system to optimize device 
+communication and system resources.
+
+Instructions:
+1. Review the welcome message: "Welcome to MindLink Analyzer"
+2. Read the subtitle: "Step 1 of 8: Choose your Operating System"
+3. Select your operating system:
+   ○ Windows (for Windows 10/11)
+   ○ macOS (for Mac computers)
+4. Click "Next →" to proceed
+
+Notes:
+- The application will auto-detect your OS and pre-select the correct option
+- This setting optimizes USB communication and file paths for your system
+
+[SCREENSHOT PLACEHOLDER: OS Selection Dialog]
+
+
+--------------------------------------------------------------------------------
+
+
+5.2  STEP 2: ENVIRONMENT & DEVICE CONNECTION
+---------------------------------------------
+
+Window Title: "MindLink - Environment Selection"
+Step: 2 of 8
+
+Purpose:
+Configure your regional settings and establish connection with the MindLink 
+EEG headset device.
+
+Instructions:
+
+Part A: Region Selection
+1. View the dialog title: "Select Environment"
+2. Read subtitle: "Step 2 of 8: Choose region and connect to device"
+3. Select your region from the dropdown:
+   • English (en) - for English-speaking regions
+   • Dutch (nl) - for Dutch-speaking regions
+4. This sets the appropriate backend server for your account
+
+Part B: Device Connection
+1. Review "Device Connection" section
+2. Initial status will show: "Not connected"
+3. Click "Connect to Device" button
+4. Wait while the application searches for your MindLink device
+5. Status updates:
+   - "Searching for device..." (scanning USB ports)
+   - "✓ Connected to COM3" (example port, will vary)
+   - If unsuccessful: "✗ No device found. Please check connection."
+
+Troubleshooting Connection Issues:
+- Ensure device is powered on and charged
+- Check USB cable is securely connected
+- Try a different USB port
+- Verify device drivers are installed
+- See Section 7: Troubleshooting for more help
+
+Navigation:
+- Click "← Back" to return to OS selection
+- Click "Next →" to proceed (enabled only after successful connection)
+
+[SCREENSHOT PLACEHOLDER: Environment & Device Connection Dialog]
+
+
+--------------------------------------------------------------------------------
+
+
+5.3  STEP 3: USER AUTHENTICATION
+---------------------------------
+
+Window Title: "MindLink - Sign In"
+Step: 3 of 8
+
+Purpose:
+Authenticate your identity and authorize device usage with your MindSpeller 
+account credentials.
+
+Instructions:
+1. View the dialog title: "Sign In"
+2. Read subtitle: "Step 3 of 8: Enter your credentials"
+3. Enter your registered email address in the "Email:" field
+4. Enter your password in the "Password:" field
+   (Password is hidden with dots for security)
+5. Click "Sign In" button to authenticate
+
+Authentication Process:
+- Application connects to MindSpeller authentication server
+- Credentials are verified securely
+- Your authorized device list is retrieved
+- Session token is obtained for data upload
+
+Status Messages:
+- "Authenticating..." - verification in progress
+- "✓ Login successful" - authentication complete
+- Error messages appear in red if login fails
+
+After Successful Login:
+- Status shows "✓ Login successful" in green
+- Device connection is verified and started
+- "Next →" button becomes enabled
+- You can proceed to Live EEG monitoring
+
+Security Notes:
+- Your credentials are transmitted securely (HTTPS)
+- Password is never stored in plain text
+- Session expires after application closes
+
+Navigation:
+- Click "← Back" to return to device connection
+- Click "Next →" to proceed to Live EEG (enabled after successful login)
+
+[SCREENSHOT PLACEHOLDER: Login Dialog]
+
+
+--------------------------------------------------------------------------------
+
+
+5.4  STEP 4: LIVE EEG SIGNAL MONITORING
+----------------------------------------
+
+Window Title: "MindLink - Live EEG Signal"
+Step: 4 of 8
+
+Purpose:
+Monitor real-time brain activity to verify signal quality and proper electrode 
+contact before proceeding with calibration and tasks.
+
+Instructions:
+1. View the dialog title: "Live EEG Signal"
+2. Read subtitle: "Step 4 of 8: Monitoring real brain activity"
+3. Observe the real-time EEG plot displaying your brain waves
+4. Check the signal quality indicator
+5. Verify the status bar shows:
+   - Battery level (should be > 20%)
+   - EEG status: "Connected" or "Streaming"
+   - Feature count updating
+
+Understanding the EEG Plot:
+- X-axis: Time (in samples, real-time scrolling)
+- Y-axis: Amplitude in microvolts (µV)
+- Blue waveform: Raw EEG signal from your frontal cortex
+- Grid lines help visualize amplitude ranges
+
+Signal Quality Assessment:
+Good Signal Indicators:
+- Smooth, continuous waveform
+- Amplitude typically between -200 to +200 µV
+- Status shows: "Signal quality: Good | Ensure proper electrode contact"
+
+Poor Signal Indicators:
+- Flat line (no signal)
+- Excessive noise or spikes
+- Intermittent gaps in data
+- Very low amplitude (< 10 µV)
+
+Improving Signal Quality:
+1. Adjust headset position on forehead
+2. Moisten electrodes slightly if dry
+3. Ensure good skin contact
+4. Remove hair from electrode area
+5. Clean skin surface before placement
+6. Minimize movement and muscle tension
+
+Status Bar Information:
+- Battery: Shows current charge percentage
+- EEG: Connection status (Disconnected/Connected)
+- Features: Running count of extracted features (0/68 initially)
+
+Duration:
+- You can observe the signal for as long as needed
+- Proceed when satisfied with signal quality
+- Typical observation: 30-60 seconds
+
+Navigation:
+- Click "← Back" to return to login
+- Click "Next →" to proceed to pathway selection
+
+[SCREENSHOT PLACEHOLDER: Live EEG Signal Monitoring Dialog]
+
+
+--------------------------------------------------------------------------------
+
+
+5.5  STEP 5: PATHWAY SELECTION
+-------------------------------
+
+Window Title: "MindLink - Choose Your Pathway"
+Step: 5 of 8
+
+Purpose:
+Select your cognitive assessment protocol to tailor the task list to your 
+specific interests or goals.
+
+Instructions:
+1. View the dialog title: "Choose Your Pathway"
+2. Read subtitle: "Step 5 of 8: Select the flow type to tailor your task list"
+3. Review the three available pathways
+4. Select one pathway that matches your goals
+5. Read the information note about included tasks
+
+Pathway Options:
+
+┌─────────────────────────────────────────────────────────────┐
+│ ○ Personal Pathway                                          │
+│   Career Flow related tasks                                 │
+│                                                             │
+│   Focus: Professional performance, decision-making,         │
+│          cognitive efficiency, and career-oriented tasks    │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ ○ Connection                                                │
+│   Mind Flow related tasks                                   │
+│                                                             │
+│   Focus: Interpersonal awareness, emotional processing,     │
+│          social cognition, and relationship tasks           │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ ○ Lifestyle                                                 │
+│   Style Flow related tasks                                  │
+│                                                             │
+│   Focus: Aesthetic preferences, sensory processing,         │
+│          lifestyle choices, and creative tasks              │
+└─────────────────────────────────────────────────────────────┘
+
+Important Information:
+ℹ️ "Baseline calibration and core cognitive tasks are included in all 
+   pathways"
+
+This means regardless of your pathway choice:
+- Eyes-closed baseline recording (included)
+- Eyes-open baseline recording (included)
+- Fundamental cognitive assessment tasks (included)
+- Pathway-specific tasks (added based on your selection)
+
+Choosing Your Pathway:
+- Personal Pathway is selected by default
+- Choose based on your primary interest or assessment goal
+- All pathways provide comprehensive analysis
+- You can run different pathways in separate sessions
+
+Navigation:
+- Click "← Back" to return to Live EEG monitoring
+- Click "Next →" to proceed to calibration
+
+[SCREENSHOT PLACEHOLDER: Pathway Selection Dialog]
+
+
+--------------------------------------------------------------------------------
+
+
+5.6  STEP 6: BASELINE CALIBRATION
+----------------------------------
+
+Window Title: "MindLink - Calibration"
+Step: 6 of 8
+
+Purpose:
+Establish your personal baseline brain activity in resting states (eyes closed 
+and eyes open) to serve as reference points for task-based analysis.
+
+Instructions Overview:
+Calibration consists of two 30-second phases:
+1. Eyes Closed Phase (30 seconds)
+2. Eyes Open Phase (30 seconds)
+
+[SCREENSHOT PLACEHOLDER: Calibration Dialog Initial State]
+
+Phase 1: Eyes Closed Calibration
+---------------------------------
+
+Preparation:
+1. View dialog title: "Baseline Calibration"
+2. Read subtitle: "Step 6 of 8: Establish your baseline brain activity"
+3. Read the instructions carefully:
+   "We will record your baseline brain activity in two phases:
+    1. Eyes Closed (30s): Close your eyes and relax
+    2. Eyes Open (30s): Keep eyes open, stay relaxed
+    
+    Click 'Start Eyes Closed' to begin."
+
+Starting Eyes Closed Phase:
+1. Get comfortable in your seat
+2. Minimize body movement
+3. Click "Start Eyes Closed (30s)" button
+4. Immediately close your eyes
+
+During Eyes Closed Recording (30 seconds):
+- Keep your eyes gently closed
+- Relax your facial muscles
+- Breathe naturally and calmly
+- Avoid swallowing or jaw movement
+- Do not fall asleep - remain awake and relaxed
+- Status shows: "Recording: Eyes Closed"
+- Message: "Close your eyes and relax... (30 seconds)"
+- Timer automatically counts down
+
+Progress Indicators:
+- Real-time data collection happening in background
+- Console shows: "✅ EC Progress: X windows kept, Y rejected"
+- Signal quality continuously monitored
+- Poor quality segments automatically rejected
+
+What Happens After 30 Seconds:
+- Recording stops automatically
+- Status updates to: "✓ Eyes Closed Complete"
+- Message: "Phase 1 complete. Ready for phase 2."
+- "Start Eyes Open (30s)" button becomes enabled
+
+[SCREENSHOT PLACEHOLDER: Eyes Closed Recording in Progress]
+
+Phase 2: Eyes Open Calibration
+-------------------------------
+
+Preparation:
+1. Take a brief moment to prepare (5-10 seconds)
+2. You may blink naturally
+3. When ready, click "Start Eyes Open (30s)" button
+
+During Eyes Open Recording (30 seconds):
+- Keep your eyes open and relaxed
+- Look at a fixed point in front of you (center of screen)
+- Blink naturally - don't try to suppress blinking
+- Keep your head still
+- Maintain relaxed posture
+- Breathe calmly
+- Status shows: "Recording: Eyes Open"
+- Message: "Keep your eyes open and stay relaxed... (30 seconds)"
+- Timer automatically counts down
+
+Progress Indicators:
+- Similar to eyes closed phase
+- Console shows: "✅ EO Progress: X windows kept, Y rejected"
+- Both phases now contributing to baseline
+
+What Happens After 30 Seconds:
+- Recording stops automatically
+- Status updates to: "✓ Calibration Complete"
+- Message: "Both phases complete. Computing baseline statistics..."
+- Application computes baseline statistics automatically
+- "Next →" button becomes enabled
+
+[SCREENSHOT PLACEHOLDER: Eyes Open Recording in Progress]
+
+Baseline Statistics Computation:
+- Average power in different frequency bands calculated
+- Reference values established for:
+  * Delta waves (0.5-4 Hz) - deep relaxation
+  * Theta waves (4-8 Hz) - drowsiness, meditation
+  * Alpha waves (8-13 Hz) - relaxed awareness
+  * Beta waves (13-30 Hz) - active thinking
+  * Gamma waves (30-50 Hz) - high-level processing
+- Baseline median and scale factors computed
+- Results stored for comparison with task data
+
+Calibration Quality:
+Good Calibration Indicators:
+- Most data windows accepted (> 90%)
+- Stable signal throughout both phases
+- No error messages or rejections
+- Smooth completion of both phases
+
+Poor Calibration Indicators:
+- Many rejected windows (< 70% accepted)
+- Warning messages about signal quality
+- Excessive movement or artifacts
+
+If Calibration Quality is Poor:
+- You may navigate back and repeat calibration
+- Ensure better electrode contact
+- Minimize movement and muscle tension
+- Try to relax more fully
+
+Navigation:
+- Click "← Back" to return to pathway selection (if you want to redo)
+- Click "Next →" to proceed to task selection (after successful calibration)
+
+Important Notes:
+- Calibration is crucial for accurate analysis
+- Take your time to get good quality recordings
+- If interrupted, you can restart the phase
+- Both phases must be completed to proceed
+
+[SCREENSHOT PLACEHOLDER: Calibration Complete State]
+
+
+--------------------------------------------------------------------------------
+
+
+5.7  STEP 7: COGNITIVE TASK SELECTION & EXECUTION
+--------------------------------------------------
+
+Window Title: "MindLink - Task Selection"
+Step: 7 of 8
+
+Purpose:
+Select and perform cognitive tasks to assess various aspects of brain function 
+and mental performance.
+
+Instructions:
+
+Task Selection Interface:
+1. View dialog title: "Cognitive Tasks"
+2. Read subtitle: "Step 7 of 8: Select tasks to perform"
+3. Browse available tasks in the dropdown menu
+4. Select a task to view details
+5. Read the task description
+6. Click "Start This Task" to begin
+
+[SCREENSHOT PLACEHOLDER: Task Selection Dialog]
+
+Available Task Categories:
+- Tasks are filtered based on your selected pathway (Step 5)
+- Personal Pathway: Career Flow tasks
+- Connection: Mind Flow tasks  
+- Lifestyle: Style Flow tasks
+- All pathways include core cognitive tasks
+
+Task Information Display:
+When you select a task from the dropdown:
+- Task name appears prominently
+- Task description explains what you'll do
+- Instructions preview shown
+- Estimated duration displayed
+- Task purpose and what it measures
+
+Starting a Task:
+1. Click "Start This Task" button
+2. Task dialog opens in full screen or large window
+3. Audio cue plays: "Start" (task begins)
+4. Follow on-screen instructions
+5. Respond according to task requirements
+
+[SCREENSHOT PLACEHOLDER: Task Session Dialog]
+
+During Task Execution:
+- Task title shown at top
+- Instructions displayed clearly
+- Visual stimuli presented (images, videos, text)
+- Timer may be visible for timed tasks
+- Status bar shows:
+  * Current battery level
+  * EEG streaming status
+  * Features being extracted in real-time
+- EEG recording happens automatically in background
+
+Task Types You May Encounter:
+
+1. Visual Discrimination Tasks
+   - View images or patterns
+   - Make choices or judgments
+   - Example: Face recognition, object categorization
+
+2. Video Response Tasks
+   - Watch short video clips
+   - Passive viewing or active response
+   - Example: Emotional response, attention tracking
+
+3. Memory Tasks
+   - Remember and recall information
+   - Pattern recognition
+   - Working memory challenges
+
+4. Decision-Making Tasks
+   - Choose between options
+   - Preference selection
+   - Risk assessment scenarios
+
+5. Attention Tasks
+   - Focus on specific stimuli
+   - Ignore distractions
+   - Sustained attention monitoring
+
+Task Completion:
+- Task automatically ends after set duration or responses
+- Audio cue plays: "Complete" or "Stop"
+- Task dialog closes
+- You return to task selection screen
+- Completed tasks list updates
+
+[SCREENSHOT PLACEHOLDER: Task in Progress]
+
+Tracking Your Progress:
+- Bottom of task selection shows:
+  "No tasks completed yet" (initially)
+  or
+  "✓ Completed 1 task: [TaskName]"
+  "✓ Completed 3 tasks: [Task1], [Task2], [Task3]"
+- "Next" button becomes "Proceed to Analysis →" after completing tasks
+
+Performing Multiple Tasks:
+1. Complete one task
+2. Return to task selection
+3. Choose another task from dropdown
+4. Repeat as many times as desired
+5. Minimum 1 task recommended
+6. Multiple tasks provide richer analysis
+
+Best Practices During Tasks:
+- Minimize head and body movement
+- Follow instructions precisely
+- Respond naturally and honestly
+- Stay focused and engaged
+- Take breaks between tasks if needed
+- Maintain good electrode contact
+
+Navigation:
+- Click "← Back" to return to calibration (not recommended during active task)
+- Click "Proceed to Analysis →" after completing desired tasks
+
+Important Notes:
+- At least one task must be completed to proceed
+- You can perform as many tasks as you want
+- Each task adds data for more comprehensive analysis
+- Tasks can be done in any order
+- You can exit and resume later (within session)
+
+[SCREENSHOT PLACEHOLDER: Task Completed - Return to Selection]
+
+
+--------------------------------------------------------------------------------
+
+
+5.8  STEP 8: MULTI-TASK ANALYSIS & REPORT GENERATION
+-----------------------------------------------------
+
+Window Title: "MindLink - Multi-Task Analysis"
+Step: 8 of 8 (Final Step)
+
+Purpose:
+Analyze all completed tasks, compare with baseline, perform statistical 
+testing, and generate a comprehensive report of your cognitive performance.
+
+Instructions:
+
+Analysis Interface:
+1. View dialog title: "Multi-Task Analysis"
+2. Read subtitle: "Step 8 of 8: Analyze all completed tasks"
+3. Review completed tasks summary
+4. Click "Analyze All Tasks" to begin analysis
+5. Wait for analysis completion
+6. Review results
+7. Generate report when ready
+
+[SCREENSHOT PLACEHOLDER: Analysis Dialog Initial State]
+
+Starting the Analysis:
+1. Click "Analyze All Tasks" button
+2. Button becomes disabled during analysis
+3. Results display shows: "Analyzing all tasks... This may take a moment."
+4. Progress indicators appear:
+   - "⏳ Initializing analysis engine..."
+   - "⏳ Computing baseline statistics..."
+   - "⏳ Preparing task comparisons..."
+   - "Please wait, this may take 30-60 seconds."
+
+Analysis Process:
+The application performs sophisticated processing:
+
+Step 1: Baseline Processing
+- Loads eyes-closed and eyes-open data
+- Computes frequency band powers
+- Establishes reference distributions
+- Calculates baseline statistics
+
+Step 2: Task Data Processing (for each task)
+- Extracts 68 neurophysiological features
+- Computes frequency domain features
+- Calculates time domain features
+- Processes signal quality metrics
+
+Step 3: Statistical Comparison
+- Compares each task to baseline
+- Performs permutation testing (1000 iterations)
+- Tests statistical significance
+- Progress shown: "Permutation testing: XX% complete"
+- Computes effect sizes and confidence intervals
+
+Step 4: Multi-Task Integration
+- Aggregates results across all tasks
+- Identifies consistent patterns
+- Ranks feature importance
+- Generates summary statistics
+
+[SCREENSHOT PLACEHOLDER: Analysis in Progress with Permutation %]
+
+Analysis Progress Updates:
+You'll see real-time progress such as:
+"Analysis in progress...
+ ⏳ Processing baseline data...
+ ⏳ Analyzing Task 1 of 3...
+ ⏳ Permutation testing: 25% complete
+ ⏳ Statistical significance testing..."
+
+Typical Analysis Duration:
+- 1 task: 30-45 seconds
+- 2-3 tasks: 45-90 seconds
+- 4+ tasks: 90-120 seconds
+- Depends on computer speed and task complexity
+
+After Analysis Completes:
+- Results text area fills with comprehensive output
+- "Generate Report" button becomes enabled
+- You can review on-screen summary
+
+[SCREENSHOT PLACEHOLDER: Analysis Complete with Results]
+
+Understanding Results Display:
+The results show detailed statistical findings:
+
+1. Header Information
+   "╔══════════════════════════════════════════════════════════╗
+    ║     BRAINLINK MULTI-TASK FEATURE ANALYSIS REPORT        ║
+    ╚══════════════════════════════════════════════════════════╝"
+   - Analysis timestamp
+   - Number of tasks analyzed
+   - Baseline reference period
+
+2. Per-Task Summary
+   For each completed task:
+   - Task name and duration
+   - Number of features extracted
+   - Features showing significant differences from baseline
+   - Top significant features listed with:
+     * Feature name
+     * Effect size (Cohen's d)
+     * P-value (statistical significance)
+     * Direction (increased/decreased vs baseline)
+
+3. Multi-Task Synthesis
+   - Features consistently significant across tasks
+   - Overall patterns identified
+   - Key findings summary
+
+4. Frequency Band Analysis
+   - Delta, theta, alpha, beta, gamma power changes
+   - Band ratios and relationships
+   - Cognitive state indicators
+
+5. Statistical Metrics
+   - Confidence intervals
+   - Permutation test results
+   - Significance levels (p < 0.05, p < 0.01, p < 0.001)
+
+Example Result Excerpt:
+"Task: VALENCE_TASK_NEGATIVE
+Duration: 30.5 seconds
+Features Extracted: 68
+Significant Features: 15
+
+Top Significant Features:
+1. Alpha Band Power (8-13 Hz)
+   Effect Size: -0.85 (Large)
+   P-value: 0.001
+   Interpretation: Significantly decreased during task
+   
+2. Beta/Alpha Ratio
+   Effect Size: +0.72 (Medium)
+   P-value: 0.003
+   Interpretation: Increased arousal/alertness"
+
+Generating the Full Report:
+1. Review the on-screen summary
+2. Click "Generate Report" button
+3. File save dialog appears
+4. Choose location and filename
+   Default: "multi_task_report_YYYYMMDD_HHMMSS.txt"
+5. Click "Save"
+6. Success message: "✓ Report saved successfully to: [path]"
+
+[SCREENSHOT PLACEHOLDER: Save Report Dialog]
+
+Report Management Options:
+
+Two buttons are available for report handling:
+
+1. "Generate Report" Button
+   Purpose: Save the analysis report locally on your device
+   Use this when:
+   - You want to keep a local copy of your results
+   - You need to review the report offline
+   - You plan to share the report via email or file transfer
+   - You want to submit the report through the Mindspeller superadmin panel
+   
+   Process:
+   - Opens file save dialog
+   - Lets you choose save location
+   - Creates a text file on your computer
+   - Report can be opened with any text editor
+
+2. "Seed Report" Button (NEW)
+   Purpose: Send report directly to Mindspeller database
+   Use this when:
+   - You have a Mindspeller account and want immediate access
+   - You want the report stored in your online profile
+   - You need the report for neuroprofiling features
+   - You want results available across devices
+   
+   Process:
+   - Click "Seed Report" button
+   - Confirmation dialog appears with email input
+   - Email is pre-filled from your login (Step 3)
+   - Verify the email is correct
+   - Click "Confirm & Seed"
+   - Report is sent to database
+   - Success toast notification appears
+   - Report becomes immediately available in your Mindspeller account
+   
+   [SCREENSHOT PLACEHOLDER: Seed Report Confirmation Dialog]
+   
+   IMPORTANT NOTES FOR SEED REPORT:
+   ⚠️  Correct Region Selection Required:
+       The region you selected in Step 2 (Environment Selection) 
+       determines which Mindspeller database receives your report.
+       - English (en) → sends to English region database
+       - Dutch (nl) → sends to Dutch region database
+       Make sure you selected the correct region matching your account!
+   
+   ⚠️  Account Required:
+       You must have a registered account at Mindspeller.com
+       The email used for seeding must match your registered account
+   
+   ✓  Success Confirmation:
+       After successful seeding, you'll see:
+       - User ID from database
+       - Session ID for this report
+       - Report ID for tracking
+       - Success toast notification
+       You can safely close the application after seeing this confirmation
+
+Choosing Between Generate and Seed:
+
+Use "Generate Report" if:
+- You want a backup copy on your device
+- You're not connected to internet reliably
+- You need to review before uploading
+- You want to share via email or other means
+- You're using this for research/clinical purposes offline
+
+Use "Seed Report" if:
+- You have an active Mindspeller account
+- You want instant access to neuroprofiling features
+- You want results immediately available online
+- You're connected to internet
+- You trust the automatic upload process
+- You want the convenience of cloud storage
+
+You can use BOTH options:
+- Generate a local copy for your records
+- Seed to database for online access
+- This gives you both local backup and cloud convenience
+
+Report Contents:
+The saved/seeded report includes:
+- Complete analysis results (shown on screen)
+- Raw data summaries
+- Statistical tables
+- Feature rankings
+- Interpretation guidelines
+- Methodology notes
+- Timestamp and session info
+- Device and software version info
+
+Using Your Report:
+- Open with any text editor
+- Share with healthcare providers
+- Track progress over multiple sessions
+- Compare results over time
+- Archive for personal records
+
+Completing the Session:
+After generating your report, you can:
+- Click "← Back" to perform additional tasks
+- Click "Finish" to complete the session and exit
+
+Finish Button:
+- Shows confirmation dialog:
+  "Session Complete
+   
+   What would you like to do?
+   
+   • Exit - Close the application
+   • Run Another Session - Start over with new tasks"
+   
+- Choose "Exit" to close application
+- Choose "Run Another Session" to return to task selection
+
+[SCREENSHOT PLACEHOLDER: Session Complete Dialog]
+
+Navigation:
+- Click "← Back" to return to task selection (add more tasks)
+- Click "Finish" to complete session
+
+Important Notes:
+- Analysis cannot be interrupted once started
+- Report is saved as plain text (.txt) file
+- Large reports (many tasks) may take longer to generate
+- Keep reports organized by date for tracking
+- Report filenames include timestamp for easy organization
+
+
+================================================================================
+
+
+6. TROUBLESHOOTING
+==================
+
+6.1 Device Connection Issues
+-----------------------------
+
+Problem: "No device found" error
+Solutions:
+1. Check USB cable connection (both ends)
+2. Try different USB port (use USB 2.0 or 3.0)
+3. Restart the MindLink device
+4. Restart the application
+5. Check Device Manager (Windows) or System Info (Mac) for device
+6. Reinstall device drivers if necessary
+7. Try a different USB cable
+
+Problem: Device disconnects during use
+Solutions:
+1. Ensure USB cable is firmly connected
+2. Avoid moving or putting pressure on cable
+3. Check battery level - charge if low
+4. Try a shorter, high-quality USB cable
+5. Disable USB power saving in system settings
+
+Problem: "Port already in use" error
+Solutions:
+1. Close any other applications using the device
+2. Restart the application
+3. Restart your computer
+4. Disconnect and reconnect the device
+
+
+6.2 Signal Quality Issues
+--------------------------
+
+Problem: Flat line or no signal
+Solutions:
+1. Check electrode contact with skin
+2. Moisten electrodes slightly
+3. Remove hair from contact area
+4. Adjust headset position
+5. Ensure device is powered on
+6. Check battery level
+
+Problem: Noisy or erratic signal
+Solutions:
+1. Minimize movement and muscle tension
+2. Relax facial muscles
+3. Avoid jaw clenching or teeth grinding
+4. Remove glasses or hat if interfering
+5. Reduce electrical interference (move away from monitors)
+6. Clean electrodes with soft cloth
+
+Problem: Very low amplitude signal
+Solutions:
+1. Improve electrode contact pressure
+2. Clean electrode surfaces
+3. Clean forehead skin
+4. Moisten electrodes if dry
+5. Reposition headset lower on forehead
+
+
+6.3 Authentication Issues
+--------------------------
+
+Problem: "Login failed" error
+Solutions:
+1. Verify email address is correct
+2. Check password (case-sensitive)
+3. Ensure internet connection is active
+4. Try resetting password on MindSpeller website
+5. Contact support if account locked
+6. Verify account is active and not expired
+
+Problem: "Server connection failed"
+Solutions:
+1. Check internet connectivity
+2. Verify firewall isn't blocking application
+3. Try different network (if using VPN, try without)
+4. Wait a few minutes and retry
+5. Check MindSpeller service status
+
+
+6.4 Calibration Issues
+-----------------------
+
+Problem: Many rejected data windows
+Solutions:
+1. Improve signal quality (see above)
+2. Minimize movement during recording
+3. Relax more fully
+4. Ensure good electrode contact before starting
+5. Restart calibration phase
+
+Problem: Cannot complete calibration
+Solutions:
+1. Check device remains connected
+2. Ensure battery sufficient
+3. Review signal quality in Live EEG step
+4. Navigate back and reconnect device
+5. Restart application if necessary
+
+
+6.5 Task Execution Issues
+--------------------------
+
+Problem: Task won't start
+Solutions:
+1. Verify device still connected
+2. Check calibration was completed
+3. Navigate back and verify all steps
+4. Restart application if necessary
+
+Problem: Media not loading (images/videos)
+Solutions:
+1. Verify assets folder is intact
+2. Reinstall application if files missing
+3. Check file permissions
+4. Ensure sufficient disk space
+
+Problem: Audio not playing
+Solutions:
+1. Check system volume and unmute
+2. Test audio with other applications
+3. Verify audio files present in assets
+4. Check audio device settings
+
+
+6.6 Analysis Issues
+--------------------
+
+Problem: Analysis takes too long (> 5 minutes)
+Solutions:
+1. Be patient - complex analysis takes time
+2. Close other resource-intensive applications
+3. Check CPU usage isn't maxed
+4. Restart analysis if frozen (close and restart app)
+
+Problem: Analysis fails with error
+Solutions:
+1. Ensure at least one task was completed
+2. Verify calibration was completed successfully
+3. Check sufficient disk space for processing
+4. Review console output for specific errors
+5. Restart application and retry
+
+Problem: Cannot save report
+Solutions:
+1. Verify write permissions for selected location
+2. Choose different save location
+3. Ensure sufficient disk space
+4. Check filename doesn't contain invalid characters
+5. Try saving to Desktop or Documents folder
+
+
+6.7 Application Crashes or Freezes
+------------------------------------
+
+Problem: Application closes unexpectedly
+Solutions:
+1. Check system requirements met
+2. Update graphics drivers
+3. Ensure sufficient RAM available
+4. Close background applications
+5. Check error logs in application folder
+6. Reinstall application
+
+Problem: Application freezes/unresponsive
+Solutions:
+1. Wait 30-60 seconds (may be processing)
+2. Check Task Manager/Activity Monitor (CPU usage)
+3. Force quit and restart if truly frozen
+4. Note at what step freeze occurred
+5. Report to technical support with details
+
+For additional support, contact: support@mindspeller.com
+
+
+================================================================================
+END OF USER MANUAL
+================================================================================
+
+
+7. TECHNICAL SUPPORT
+====================
+
+Need Additional Help?
+---------------------
+
+If you continue to experience issues after trying the troubleshooting steps:
+
+Contact Support:
+- Email: contact@mindspeller.com
+
+When Contacting Support, Please Provide:
+1. Your operating system and version
+2. Application version number
+3. Description of the problem
+4. Steps that led to the issue
+5. Error messages or screenshots
+6. Device serial number (if device issue)
+7. What troubleshooting steps you've already tried
+
+Response Times:
+- Email support: 24-48 hours
+- Critical issues: Priority handling
+- General questions: 2-3 business days
+
+System Logs:
+If requested by support, you can find logs at:
+- Windows: C:\Users\[YourName]\AppData\Local\MindLink\logs\
+- macOS: ~/Library/Application Support/MindLink/logs/

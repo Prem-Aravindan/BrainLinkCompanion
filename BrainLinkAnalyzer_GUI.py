@@ -205,7 +205,7 @@ AVAILABLE_TASKS = {
         'name': 'Visual Imagery',
         'description': 'Visualize a familiar place or object in detail',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Visualize walking through your home in rich sensory detail.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start visualizing\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Visualize walking through your home in rich sensory detail.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start visualizing\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Visualize walking through your home in rich sensory detail continuously. (Start on beep sound).'},
@@ -216,7 +216,7 @@ AVAILABLE_TASKS = {
         'name': 'Focused Attention',
         'description': 'Focus intensely on breathing or a single point',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Count breaths 1–10 and repeat.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start focusing\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Count breaths 1–10 and repeat.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start focusing\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'},
@@ -227,7 +227,7 @@ AVAILABLE_TASKS = {
         'name': 'Mental Math',
         'description': 'Perform mental arithmetic (e.g., count backwards from 200 by 7s)',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 200 by 7s: 200, 193, 186, 179...\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start counting\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 200 by 7s: 200, 193, 186, 179...\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start counting\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to count backwards from 200 by 7s with your EYES CLOSED.'},
@@ -238,7 +238,7 @@ AVAILABLE_TASKS = {
         'name': 'Working Memory',
         'description': 'Remember and manipulate a sequence of numbers or letters',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Remember this sequence: 3-8-2-9-5-1. Now add 2 to each number mentally.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start calculating\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Remember this sequence: 3-8-2-9-5-1. Now add 2 to each number mentally.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start calculating\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to remember and manipulate this sequence: 3-8-2-9-5-1. Add 2 to each number with EYES CLOSED.'},
@@ -249,7 +249,7 @@ AVAILABLE_TASKS = {
         'name': 'Focused Attention',
         'description': 'Focus intensely on breathing or a single point',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Count breaths 1–10 and repeat.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start focusing\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Focus all attention on your breathing. Count breaths 1–10 and repeat.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start focusing\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'FOCUS: Attend only to breathing. Count breaths 1–10 and restart; gently return if distracted with EYES CLOSED.'},
@@ -260,7 +260,7 @@ AVAILABLE_TASKS = {
         'name': 'Language Processing',
         'description': 'Generate words or sentences following specific rules',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Think of as many words as possible that start with the letter "S".\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start generating words\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Think of as many words as possible that start with the letter "S".\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start generating words\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare – Silently list distinct "S" words, avoid repeats, keep steady pace with EYES CLOSED.).'},
@@ -271,7 +271,7 @@ AVAILABLE_TASKS = {
         'name': 'Motor Imagery',
         'description': 'Imagine performing physical movements without moving',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Imagine throwing a ball with your right hand, then left hand, alternating.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start imagining\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Imagine throwing a ball with your right hand, then left hand, alternating.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start imagining\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to imagine throwing a ball with your right hand, then left hand, alternating with EYES CLOSED.'},
@@ -282,7 +282,7 @@ AVAILABLE_TASKS = {
         'name': 'Cognitive Load',
         'description': 'Perform multiple cognitive tasks simultaneously',
         'duration': 60,
-        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 50 by 3s while visualizing the numbers in blue.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start task\n• 4 beeps = Task complete, you can stop',
+        'instructions': '🔊 EYES CLOSED TASK - Count backwards from 50 by 3s while visualizing the numbers in blue.\n\nAudio cues:\n• 1st beep = Read instructions on screen\n• 2nd beep = Close eyes & start task\n• 2 beeps = Task complete, you can stop',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'cue', 'duration': 8, 'record': False, 'instruction': 'CUE: Prepare to count backwards from 50 by 3s while visualizing each number in blue with EYES CLOSED.'},
@@ -294,7 +294,7 @@ AVAILABLE_TASKS = {
     'name': 'Emotion Recognition',
         'description': 'View static emotional face images with timed phases.',
         'duration': 114,  # 6 images × 19s each (8s cue + 11s look+resonate)
-        'instructions': '👁️ EYES OPEN TASK - For each face: LOOK & RESONATE with the emotion shown.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start task | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - For each face: LOOK & RESONATE with the emotion shown.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start task | 2 beeps = End task',
         'phases': ['analyze', 'rest'],
         'continuous_recording': True,  # Record throughout entire task
         'phase_structure': [
@@ -323,7 +323,7 @@ AVAILABLE_TASKS = {
     'name': 'Creative Fluency',
         'description': 'Divergent thinking task with timed phases.',
         'duration': 96,  # 2 prompts × 48s each (8s get ready + 10s cue + 30s thinking)
-        'instructions': '👁️ EYES OPEN TASK - Read the prompt, then think of creative and unusual uses.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start thinking | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - Read the prompt, then think of creative and unusual uses.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start thinking | 2 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for creative thinking...'},
@@ -353,7 +353,7 @@ AVAILABLE_TASKS = {
     'name': 'Perspective Shift',
         'description': 'Cognitive reappraisal task with timed phases.',
         'duration': 96,  # 2 scenarios × 48s each (8s get ready + 10s cue + 30s thinking)
-        'instructions': '👁️ EYES OPEN TASK - Read the scenario and follow the specific thinking instructions.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start task | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - Read the scenario and follow the specific thinking instructions.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & start task | 2 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for thinking task...'},
@@ -385,7 +385,7 @@ AVAILABLE_TASKS = {
     'name': 'Curiosity Reveal',
         'description': 'Curiosity task with reveal timing.',
         'duration': 45,  # 8s get ready + 2s cue + 2s wait + 33s video
-        'instructions': '👁️ EYES OPEN TASK - Watch the video reveal with full attention.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & video starts | 4 beeps = End task',
+        'instructions': '👁️ EYES OPEN TASK - Watch the video reveal with full attention.\n\nAudio cues: 1st beep = Read instructions on screen | 2nd beep = Keep eyes open & video starts | 2 beeps = End task',
         'phases': ['analyze', 'rest'],
         'phase_structure': [
             {'type': 'get_ready', 'duration': 8, 'record': False, 'instruction': 'Get ready for video reveal...'},
@@ -408,7 +408,7 @@ AVAILABLE_TASKS = {
             '👁️ EYES OPEN TASK\n\n'
             'NUMBERS: Wait for the countdown, then LOOK for the numbers. Keep your gaze steady and minimize movement.\n'
             'FORMS: Wait for the countdown, then LOOK for the shapes. Keep your gaze steady and minimize movement.\n\n'
-            'Audio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
+            'Audio cues: 1 beep = Start task | 1 smooth beep = Phase change | 2 beeps = End task'
         ),
         'phases': ['analyze', 'rest'],
         'continuous_recording': True,
@@ -433,7 +433,7 @@ AVAILABLE_TASKS = {
             '👁️ EYES OPEN TASK\n\n'
             'ORDER: Wait for the countdown, then COUNT symmetrical/normal shapes. Keep your gaze steady and minimize movement.\n'
             'SURPRISE: Wait for the countdown, then COUNT non-symmetrical/abnormal shapes. Keep your gaze steady and minimize movement.\n\n'
-            'Audio cues: 1 beep = Start task | 1 smooth beep = Phase change | 4 beeps = End task'
+            'Audio cues: 1 beep = Start task | 1 smooth beep = Phase change | 2 beeps = End task'
         ),
         'phases': ['analyze', 'rest'],
         'continuous_recording': True,
@@ -1368,7 +1368,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
-        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay) (Real-time)')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
         self.plot_widget.setYRange(-200, 200)
         self.plot_widget.setXRange(0, 256)
@@ -1681,7 +1681,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
-        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay) (Real-time)')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
         self.plot_widget.setYRange(-200, 200)
         self.plot_widget.setXRange(0, 256)
@@ -1983,7 +1983,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
-        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay) (Real-time)')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
         self.plot_widget.setYRange(-200, 200)
         self.plot_widget.setXRange(0, 256)
@@ -2318,7 +2318,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
-        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay) (Real-time)')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
         self.plot_widget.setYRange(-200, 200)
         self.plot_widget.setXRange(0, 256)
@@ -2625,7 +2625,7 @@ class BrainLinkAnalyzerWindow(QMainWindow):
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Sample Index')
-        self.plot_widget.setTitle('Raw EEG Signal (Real-time)')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay) (Real-time)')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
         self.plot_widget.setYRange(-200, 200)
         self.plot_widget.setXRange(0, 256)

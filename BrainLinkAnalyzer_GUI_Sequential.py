@@ -674,7 +674,7 @@ class LiveEEGDialog(QDialog):
         self.plot_widget.setBackground('k')
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Time (samples)')
-        self.plot_widget.setTitle('Raw EEG Signal', color='w', size='12pt')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay)', color='w', size='12pt')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
         self.curve = self.plot_widget.plot(pen=pg.mkPen(color='#3b82f6', width=2))

@@ -12,6 +12,7 @@ task execution, analysis) is the REAL implementation, just reorganized into step
 import os
 import sys
 import platform
+import numpy as np
 
 # Set Qt environment BEFORE any imports
 os.environ.setdefault('PYQTGRAPH_QT_LIB', 'PySide6')
@@ -25,6 +26,78 @@ try:
         os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugins_dir
 except Exception:
     pass
+
+# Initialize pygame mixer for cross-platform audio
+try:
+    import pygame.mixer
+    pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+    AUDIO_AVAILABLE = True
+except Exception:
+    AUDIO_AVAILABLE = False
+    print("Warning: pygame not available, audio beeps will be disabled")
+
+def play_beep(frequency=800, duration_ms=200):
+    """Cross-platform beep using pygame mixer.
+    
+    Args:
+        frequency: Beep frequency in Hz (default 800)
+        duration_ms: Beep duration in milliseconds (default 200)
+    """
+    if not AUDIO_AVAILABLE:
+        return
+    
+    try:
+        # Generate sine wave for beep
+        sample_rate = 22050
+        duration_s = duration_ms / 1000.0
+        num_samples = int(sample_rate * duration_s)
+        
+        # Create sine wave array
+        samples = np.sin(2 * np.pi * frequency * np.linspace(0, duration_s, num_samples))
+        # Normalize to 16-bit range
+        samples = (samples * 32767).astype(np.int16)
+        
+        # Create stereo sound (duplicate mono to both channels)
+        stereo_samples = np.column_stack((samples, samples))
+        
+        # Play the beep
+        sound = pygame.mixer.Sound(buffer=stereo_samples)
+        sound.play()
+    except Exception as e:
+        print(f"Warning: Could not play beep: {e}")
+
+def cleanup_and_quit():
+    """Properly cleanup device connections and trigger main window close"""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    
+    # Find the main window and close it (which will trigger its closeEvent with confirmation)
+    app = QApplication.instance()
+    if app:
+        for widget in app.topLevelWidgets():
+            if isinstance(widget, EnhancedBrainLinkAnalyzerWindow):
+                # Close the main window which will:
+                # 1. Show confirmation dialog
+                # 2. Stop BrainLink thread via parent's closeEvent
+                # 3. Properly cleanup everything
+                widget.close()
+                return
+    
+    # Fallback if main window not found - do cleanup directly
+    try:
+        print("Cleanup: Stopping BrainLink thread...")
+        BL.stop_thread_flag = True
+        
+        if hasattr(BL, 'serial_obj') and BL.serial_obj:
+            try:
+                print("Cleanup: Closing serial connection...")
+                BL.serial_obj.close()
+            except Exception as e:
+                print(f"Cleanup: Error closing serial: {e}")
+    except Exception as e:
+        print(f"Warning: Error during cleanup: {e}")
+    
+    QApplication.quit()
 
 # Import the complete Enhanced GUI
 from BrainLinkAnalyzer_GUI_Enhanced import (
@@ -70,16 +143,16 @@ def assess_eeg_signal_quality(data_window, fs=512):
     if arr_std < 2.0:  # Less than 2 µV std is suspiciously low
         return 10, "not_worn", details
     
-    # Extremely high variance = severe artifacts or not on head
+    # Extremely high variance = severe artifacts (but likely still worn)
     if arr_std > 500:  # More than 500 µV std is extreme noise
         return 15, "severe_artifacts", details
     
     # Metric 2: Check for realistic EEG amplitude range
-    # Real EEG rarely exceeds 200 µV; values over 500 µV indicate poor contact/artifacts
+    # Real EEG rarely exceeds 200 µV; values over 500 µV indicate artifacts (but likely worn)
     if arr_max > 500:
         return 25, "amplitude_artifacts", details
     
-    # Metric 3: Check baseline stability (DC drift indicates poor contact)
+    # Metric 3: Check baseline stability (DC drift indicates poor contact but likely worn)
     # Split window into 4 quarters and check mean shift
     quarter_size = len(arr) // 4
     quarters_means = [np.mean(arr[i*quarter_size:(i+1)*quarter_size]) for i in range(4)]
@@ -89,7 +162,7 @@ def assess_eeg_signal_quality(data_window, fs=512):
     if baseline_drift > 30:  # Excessive drift
         return 35, "poor_contact", details
     
-    # Metric 4: Check for motion artifacts using kurtosis
+    # Metric 4: Check for motion artifacts using kurtosis (likely worn, just moving)
     # High kurtosis (>5) indicates spiky artifacts
     from scipy.stats import kurtosis
     kurt = kurtosis(arr, fisher=True)
@@ -119,11 +192,11 @@ def assess_eeg_signal_quality(data_window, fs=512):
         eeg_band_ratio = eeg_band_power / (total_power + 1e-12)
         details['eeg_band_ratio'] = float(eeg_band_ratio)
         
-        # If less than 30% power in EEG bands, likely not real EEG
-        if eeg_band_ratio < 0.3:
-            return 45, "non_eeg_signal", details
+        # If less than 20% power in EEG bands, likely not worn (more lenient threshold)
+        if eeg_band_ratio < 0.2:
+            return 45, "not_worn", details
         
-        # Check high frequency noise (>40 Hz)
+        # Check high frequency noise (>40 Hz) - treat as noise, not "not worn"
         idx_high_freq = freqs >= 40
         high_freq_power = np.sum(psd[idx_high_freq])
         high_freq_ratio = high_freq_power / (total_power + 1e-12)
@@ -391,18 +464,16 @@ class MindLinkStatusBar(QFrame):
         self.update_timer.timeout.connect(self.update_status)
         self.update_timer.start(500)  # Update every 500ms
         
-        # Quality tracking for sustained poor signal detection
-        self.quality_history = []  # List of (timestamp, quality_score) tuples
-        self.poor_quality_threshold = 45  # Below this is considered poor
-        self.is_noisy = False  # Current state
-        
         # Help dialog reference
         self.help_dialog = None
     
     def update_status(self):
-        """Update the status display"""
+        """Update the status display - uses same logic as LiveEEGDialog"""
         try:
-            # Check EEG connection status
+            import time
+            import numpy as np
+            
+            # Check EEG connection status (simple check like LiveEEGDialog)
             if BL.live_data_buffer and len(BL.live_data_buffer) > 0:
                 self.eeg_status.setText("EEG: ✓ Connected")
                 self.eeg_status.setStyleSheet("color: #10b981; font-weight: 700;")
@@ -410,33 +481,14 @@ class MindLinkStatusBar(QFrame):
                 self.eeg_status.setText("EEG: ✗ No Signal")
                 self.eeg_status.setStyleSheet("color: #fbbf24; font-weight: 700;")
             
-            # Professional multi-metric signal quality assessment
+            # Professional multi-metric signal quality assessment (same as LiveEEGDialog)
             if len(BL.live_data_buffer) >= 512:
-                import numpy as np
-                import time
                 recent_data = np.array(list(BL.live_data_buffer)[-512:])
                 
                 quality_score, status, details = assess_eeg_signal_quality(recent_data, fs=512)
                 
-                # Track quality history (timestamp, score)
-                current_time = time.time()
-                self.quality_history.append((current_time, quality_score))
-                
-                # Remove entries older than 5 seconds
-                self.quality_history = [(t, q) for t, q in self.quality_history if current_time - t <= 5.0]
-                
-                # Count how many times quality dropped below threshold in last 5 seconds
-                poor_count = sum(1 for t, q in self.quality_history if q < self.poor_quality_threshold)
-                
-                # Update noisy state: need 5+ poor readings in 5 seconds to trigger
-                if poor_count >= 5:
-                    self.is_noisy = True
-                elif poor_count == 0:  # All recent readings good - reset
-                    self.is_noisy = False
-                # Otherwise maintain current state (hysteresis)
-                
-                # Display only two states: Good or Noisy
-                if self.is_noisy:
+                # Simplified logic: Only show "Noisy" if headset is not worn
+                if status == "not_worn":
                     self.signal_quality.setText("Signal: ⚠ Noisy")
                     self.signal_quality.setStyleSheet("color: #f59e0b; font-weight: 700;")
                 else:
@@ -445,7 +497,8 @@ class MindLinkStatusBar(QFrame):
             else:
                 self.signal_quality.setText("Signal: Waiting...")
                 self.signal_quality.setStyleSheet("color: #94a3b8; font-weight: 700;")
-        except Exception:
+        except Exception as e:
+            print(f"Warning: Error updating status: {e}")
             pass
     
     def show_help_dialog(self):
@@ -603,21 +656,21 @@ class HelpDialog(QDialog):
         self.setModal(False)  # Non-modal so it can stay open while using the app
         
         # Set optimal size for readability
-        self.setMinimumSize(1200, 850)
+        self.setMinimumSize(900, 650)
         
         # Try to set responsive size based on screen
         try:
             screen = QtWidgets.QApplication.primaryScreen()
             if screen:
                 avail = screen.availableGeometry()
-                # Use 92% of screen size for maximum content visibility
-                target_w = min(int(avail.width() * 0.92), 1700)
-                target_h = min(int(avail.height() * 0.92), 1050)
+                # Use 70% of screen size for better proportions
+                target_w = min(int(avail.width() * 0.70), 1200)
+                target_h = min(int(avail.height() * 0.70), 800)
                 self.resize(target_w, target_h)
             else:
-                self.resize(1500, 1000)
+                self.resize(1100, 750)
         except Exception:
-            self.resize(1500, 1000)
+            self.resize(1100, 750)
         
         # Set window icon
         set_window_icon(self)
@@ -653,10 +706,257 @@ class HelpDialog(QDialog):
         
         layout.addWidget(header)
         
+        # Create tab widget
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #cbd5e1;
+                background: #ffffff;
+            }
+            QTabBar::tab {
+                background: #f1f5f9;
+                color: #334155;
+                padding: 10px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background: #0ea5e9;
+                color: #ffffff;
+            }
+            QTabBar::tab:hover {
+                background: #e0f2fe;
+                color: #0369a1;
+            }
+        """)
+        
+        # Tab 1: Getting Started (with images)
+        getting_started_tab = self.create_getting_started_tab()
+        self.tab_widget.addTab(getting_started_tab, "🚀 Getting Started")
+        
+        # Tab 2: User Manual (existing content)
+        manual_tab = self.create_manual_tab()
+        self.tab_widget.addTab(manual_tab, "📖 User Manual")
+        
+        layout.addWidget(self.tab_widget)
+        
+        # Minimal footer with close button
+        footer = QFrame()
+        footer.setFixedHeight(50)  # Force compact footer
+        footer.setStyleSheet("""
+            QFrame {
+                background: #f8fafc;
+                border-top: 1px solid #e2e8f0;
+                padding: 0px;
+                margin: 0px;
+            }
+        """)
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(16, 8, 16, 8)
+        footer_layout.addStretch()
+        
+        close_button = QPushButton("✕ Close")
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #0ea5e9;
+                color: #ffffff;
+                border-radius: 8px;
+                padding: 10px 28px;
+                font-size: 14px;
+                font-weight: 600;
+                border: 0;
+            }
+            QPushButton:hover {
+                background-color: #0284c7;
+            }
+            QPushButton:pressed {
+                background-color: #0369a1;
+            }
+        """)
+        close_button.clicked.connect(self.close)
+        footer_layout.addWidget(close_button)
+        
+        layout.addWidget(footer)
+        
+        self.setLayout(layout)
+        apply_modern_dialog_theme(self)
+    
+    def create_getting_started_tab(self):
+        """Create the Getting Started tab with setup instructions and images"""
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Scrollable content area
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: #ffffff; }")
+        
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(30, 30, 30, 30)
+        content_layout.setSpacing(30)
+        
+        # Helper function to add section with two-column layout (text left, image right)
+        def add_section(title, text, image_path=None):
+            # Section container with border
+            section_frame = QFrame()
+            section_frame.setStyleSheet("""
+                QFrame {
+                    background: #f8fafc;
+                    border: 2px solid #e2e8f0;
+                    border-radius: 10px;
+                    padding: 20px;
+                }
+            """)
+            section_layout = QVBoxLayout(section_frame)
+            section_layout.setContentsMargins(20, 20, 20, 20)
+            section_layout.setSpacing(15)
+            
+            # Title
+            title_label = QLabel(title)
+            title_label.setStyleSheet("""
+                font-size: 18px;
+                font-weight: 700;
+                color: #0f172a;
+                padding: 0px 0px 10px 0px;
+                border-bottom: 3px solid #0ea5e9;
+            """)
+            section_layout.addWidget(title_label)
+            
+            # Two-column layout for text and image
+            two_col_layout = QHBoxLayout()
+            two_col_layout.setSpacing(25)
+            
+            # Left side: Text
+            text_label = QLabel(text)
+            text_label.setStyleSheet("""
+                font-size: 14px;
+                color: #334155;
+                line-height: 1.8;
+                padding: 10px;
+                background: #ffffff;
+                border-radius: 8px;
+            """)
+            text_label.setWordWrap(True)
+            text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            two_col_layout.addWidget(text_label, 1)  # Stretch factor 1
+            
+            # Right side: Image
+            if image_path:
+                try:
+                    img_full_path = BL.resource_path(f"assets/{image_path}")
+                    if os.path.isfile(img_full_path):
+                        pixmap = QtGui.QPixmap(img_full_path)
+                        if not pixmap.isNull():
+                            # Scale image to fit the right column (1/3 of previous size)
+                            scaled_pixmap = pixmap.scaledToWidth(167, Qt.SmoothTransformation)
+                            img_label = QLabel()
+                            img_label.setPixmap(scaled_pixmap)
+                            img_label.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+                            img_label.setStyleSheet("""
+                                padding: 10px; 
+                                background: #ffffff; 
+                                border: 2px solid #cbd5e1;
+                                border-radius: 8px;
+                            """)
+                            two_col_layout.addWidget(img_label, 1)  # Stretch factor 1
+                        else:
+                            print(f"Failed to load pixmap for {image_path}")
+                    else:
+                        print(f"Image file not found: {img_full_path}")
+                except Exception as e:
+                    print(f"Error loading image {image_path}: {e}")
+            
+            section_layout.addLayout(two_col_layout)
+            content_layout.addWidget(section_frame)
+        
+        # Section 1: Power On/Off Instructions
+        add_section(
+            "1. Turning the Amplifier On/Off",
+            "<b>To Turn ON:</b><br>"
+            "• Press and hold the power button for <b>2 seconds</b><br>"
+            "• The amplifier will <b>vibrate once</b> to confirm it's powered on<br><br>"
+            "<b>To Turn OFF:</b><br>"
+            "• Press the power button <b>once</b> (short press)<br>"
+            "• The amplifier will <b>vibrate twice</b> to confirm it's powered off<br><br>"
+            "<b>Low Battery Warning:</b><br>"
+            "• When the battery is empty, the amplifier will <b>vibrate multiple times continuously</b> and turn off automatically<br>"
+            "• Please charge the amplifier when this happens",
+            "onoffinstructions.jpg"
+        )
+        
+        # Section 2: Pairing with Bluetooth
+        add_section(
+            "2. Pairing the Amplifier with Your Device",
+            "<b>Important:</b> Follow the standard Windows Bluetooth pairing process:<br><br>"
+            "1. Turn on the amplifier (press and hold for 2 seconds)<br>"
+            "2. Open <b>Settings → Bluetooth & devices → Add device</b> in Windows<br>"
+            "3. Select <b>\"Bluetooth\"</b> from the add device options<br>"
+            "4. Wait for <b>\"Brainlink_Pro (Audio)\"</b> to appear in the list<br>"
+            "5. Click on <b>\"Brainlink_Pro (Audio)\"</b> to pair<br><br>"
+            "<b>Note:</b> The headset will <b>briefly connect and then disconnect</b> automatically. "
+            "<b>This is normal!</b> The pairing process only registers the headset with your device. "
+            "The actual connection will be established automatically when you sign in to the application.",
+            None
+        )
+        
+        # Section 3: Wearing the Headset
+        add_section(
+            "3. Wearing the Headset Properly",
+            "<b>Amplifier Position:</b><br>"
+            "• Place the amplifier <b>above your left ear</b><br><br>"
+            "<b>Light Sensor Position:</b><br>"
+            "• The light sensor should be positioned <b>right between your eyebrows</b><br><br>"
+            "<b>Electrode Position:</b><br>"
+            "• The electrodes should be positioned <b>2 inches above your eyebrows</b> for optimal signal quality<br><br>"
+            "<b>Important:</b> Proper positioning ensures accurate EEG readings",
+            "wearinstructions.jpg"
+        )
+        
+        # Section 4: Removing Amplifier for Charging
+        add_section(
+            "4. Removing the Amplifier for Charging",
+            "<b>To charge the amplifier, you need to remove it from the clip:</b><br><br>"
+            "1. Locate the clip that holds the amplifier to the headband<br>"
+            "2. Gently pull the amplifier out of the clip (see image below)<br>"
+            "3. Connect the charging cable to the amplifier<br>"
+            "4. Charge until the indicator shows full battery<br><br>"
+            "<b>Note:</b> The amplifier cannot be charged while attached to the headset clip",
+            "takeoffinstructions.jpg"
+        )
+        
+        # Section 5: Inserting Amplifier Back
+        add_section(
+            "5. Inserting the Amplifier Back into the Clip",
+            "<b>After charging, reattach the amplifier to the headset:</b><br><br>"
+            "1. Hold the amplifier with the correct orientation (see image below)<br>"
+            "2. Align the amplifier with the clip opening<br>"
+            "3. Gently push the amplifier into the clip until it clicks securely<br>"
+            "4. Ensure the amplifier is firmly attached before wearing the headset<br><br>"
+            "<b>Important:</b> Make sure the amplifier is properly seated to maintain good electrode contact",
+            "insertinstructions.jpg"
+        )
+        
+        content_layout.addStretch()
+        scroll.setWidget(content_widget)
+        tab_layout.addWidget(scroll)
+        
+        return tab
+    
+    def create_manual_tab(self):
+        """Create the User Manual tab with TOC and content"""
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        
         # Create horizontal splitter for TOC and content
         splitter = QtWidgets.QSplitter(Qt.Horizontal)
         
-        # Table of Contents (left side)
+        # Table of Contents (left side) - moved from __init__
         toc_frame = QFrame()
         toc_frame.setStyleSheet("""
             QFrame {
@@ -729,54 +1029,13 @@ class HelpDialog(QDialog):
         splitter.addWidget(self.text_display)
         
         # Set initial splitter sizes (TOC: 22%, Content: 78%)
-        # Using pixel values that work better with the larger window
         splitter.setSizes([330, 1170])
         
         # Load the user manual content
         self.load_manual_content()
         
-        layout.addWidget(splitter)
-        
-        # Minimal footer with close button
-        footer = QFrame()
-        footer.setFixedHeight(50)  # Force compact footer
-        footer.setStyleSheet("""
-            QFrame {
-                background: #f8fafc;
-                border-top: 1px solid #e2e8f0;
-                padding: 0px;
-                margin: 0px;
-            }
-        """)
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(16, 8, 16, 8)
-        footer_layout.addStretch()
-        
-        close_button = QPushButton("✕ Close")
-        close_button.setStyleSheet("""
-            QPushButton {
-                background-color: #0ea5e9;
-                color: #ffffff;
-                border-radius: 8px;
-                padding: 10px 28px;
-                font-size: 14px;
-                font-weight: 600;
-                border: 0;
-            }
-            QPushButton:hover {
-                background-color: #0284c7;
-            }
-            QPushButton:pressed {
-                background-color: #0369a1;
-            }
-        """)
-        close_button.clicked.connect(self.close)
-        footer_layout.addWidget(close_button)
-        
-        layout.addWidget(footer)
-        
-        self.setLayout(layout)
-        apply_modern_dialog_theme(self)
+        tab_layout.addWidget(splitter)
+        return tab
     
     def load_manual_content(self):
         """Load the user manual from file and extract table of contents"""
@@ -1012,36 +1271,50 @@ class WorkflowManager:
         dialog = OSSelectionDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Use show() instead of exec() to keep event loop running
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_environment_selection(self):
         dialog = EnvironmentSelectionDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Use show() instead of exec()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_login(self):
         dialog = LoginDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Use show() instead of exec()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_pathway_selection(self):
         dialog = PathwaySelectionDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Use show() instead of exec()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_live_eeg(self):
         dialog = LiveEEGDialog(self)
         self.current_dialog = dialog
         dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_calibration(self):
         dialog = CalibrationDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Already using show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_task_selection(self):
         dialog = TaskSelectionDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Use show() instead of exec()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _show_multi_task_analysis(self):
         dialog = MultiTaskAnalysisDialog(self)
@@ -1062,6 +1335,7 @@ class OSSelectionDialog(QDialog):
         self.setWindowTitle("MindLink - Operating System")
         self.setModal(True)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.setMinimumWidth(400)
         self._programmatic_close = False  # Flag to distinguish user vs programmatic close
         
@@ -1135,6 +1409,12 @@ class OSSelectionDialog(QDialog):
             event.accept()
         else:
             # This is user clicking X button - confirm and quit
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
@@ -1142,9 +1422,15 @@ class OSSelectionDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
     
@@ -1180,7 +1466,7 @@ class EnvironmentSelectionDialog(QDialog):
         title_label = QLabel("Select Region")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 2 of 8: Choose region and connect to device")
+        subtitle_label = QLabel("Step 2 of 8: Choose your region")
         subtitle_label.setObjectName("DialogSubtitle")
         
         # Environment selection card
@@ -1206,25 +1492,62 @@ class EnvironmentSelectionDialog(QDialog):
         env_layout.addWidget(self.env_combo)
         env_layout.addWidget(warning_label)
         
-        # Connection status card
-        conn_card = QFrame()
-        conn_card.setObjectName("DialogCard")
-        conn_layout = QVBoxLayout(conn_card)
-        conn_layout.setContentsMargins(16, 16, 16, 16)
-        conn_layout.setSpacing(10)
+        # Amplifier preparation instructions
+        prep_card = QFrame()
+        prep_card.setObjectName("DialogCard")
+        prep_layout = QVBoxLayout(prep_card)
+        prep_layout.setContentsMargins(16, 16, 16, 16)
+        prep_layout.setSpacing(10)
         
-        conn_label = QLabel("Device Connection:")
-        conn_label.setObjectName("DialogSectionTitle")
+        prep_label = QLabel("Before You Continue:")
+        prep_label.setObjectName("DialogSectionTitle")
         
-        self.status_label = QLabel("Not connected")
-        self.status_label.setStyleSheet("color: #64748b; font-size: 13px;")
+        info_label = QLabel(
+            "ℹ️ Please ensure the headset is:\n\n"
+            "  • Paired with your device via Bluetooth\n"
+            "  • Turned ON and placed on your head correctly\n\n"
+            "The device connection will be verified when you sign in on the next step."
+        )
+        info_label.setStyleSheet("font-size: 13px; color: #3b82f6; padding: 12px; background: #eff6ff; border-radius: 6px; border-left: 3px solid #3b82f6; line-height: 1.6;")
+        info_label.setWordWrap(True)
         
-        self.connect_button = QPushButton("Connect to Device")
-        self.connect_button.clicked.connect(self.on_connect)
+        prep_layout.addWidget(prep_label)
+        prep_layout.addWidget(info_label)
         
-        conn_layout.addWidget(conn_label)
-        conn_layout.addWidget(self.status_label)
-        conn_layout.addWidget(self.connect_button)
+        # Help button for setup reference
+        help_ref_button = QPushButton("❓ Setup Help")
+        help_ref_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: #ffffff;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: 600;
+                border: 0;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+            QPushButton:pressed {
+                background-color: #1d4ed8;
+            }
+        """)
+        
+        # Connect to show help dialog
+        def show_setup_help():
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            for widget in app.topLevelWidgets():
+                if isinstance(widget, HelpDialog) and widget.isVisible():
+                    widget.raise_()
+                    widget.activateWindow()
+                    return
+            help_dialog = HelpDialog(self)
+            help_dialog.show()
+        
+        help_ref_button.clicked.connect(show_setup_help)
+        prep_layout.addWidget(help_ref_button)
         
         # Navigation buttons
         nav_layout = QHBoxLayout()
@@ -1246,7 +1569,6 @@ class EnvironmentSelectionDialog(QDialog):
         
         self.next_button = QPushButton("Next →")
         self.next_button.clicked.connect(self.on_next)
-        self.next_button.setEnabled(False)
         
         nav_layout.addWidget(self.next_button)
         
@@ -1257,7 +1579,7 @@ class EnvironmentSelectionDialog(QDialog):
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
         layout.addWidget(env_card)
-        layout.addWidget(conn_card)
+        layout.addWidget(prep_card)
         layout.addLayout(nav_layout)
         
         self.setLayout(layout)
@@ -1275,6 +1597,12 @@ class EnvironmentSelectionDialog(QDialog):
         if self._programmatic_close:
             event.accept()
         else:
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
@@ -1282,9 +1610,15 @@ class EnvironmentSelectionDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
     
@@ -1306,42 +1640,6 @@ class EnvironmentSelectionDialog(QDialog):
         BL.BACKEND_URL = backend_urls[env_name]
         # Store login URL for later
         self.login_url = login_urls[env_name]
-    
-    def on_connect(self):
-        """Attempt to connect to REAL MindLink device"""
-        self.status_label.setText("Searching for device...")
-        self.connect_button.setEnabled(False)
-        
-        # Use REAL device detection from base GUI
-        QTimer.singleShot(500, self._detect_device)
-    
-    def _detect_device(self):
-        """Run actual device detection"""
-        try:
-            # Call the REAL detect_brainlink function
-            port = BL.detect_brainlink()
-            
-            if port:
-                BL.SERIAL_PORT = port
-                self.status_label.setText(f"✓ EEG headset registered to device: {port}\n\nPlease press Next & sign in to connect to the device.")
-                self.status_label.setStyleSheet("color: #10b981; font-size: 13px; font-weight: 600;")
-                self.next_button.setEnabled(True)
-                
-                # Device is detected but actual connection happens in Login step after authentication
-            else:
-                self.status_label.setText(
-                    "✗ No headset found.\n\n"
-                    "Please ensure:\n"
-                    "1. The headset is added to device Bluetooth\n"
-                    "2. The amplifier is paired (not necessarily powered on yet)\n\n"
-                    "After pairing, please restart the application."
-                )
-                self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
-                self.connect_button.setEnabled(True)
-        except Exception as e:
-            self.status_label.setText(f"✗ Error: {str(e)}")
-            self.status_label.setStyleSheet("color: #dc2626; font-size: 13px;")
-            self.connect_button.setEnabled(True)
     
     def on_back(self):
         """Navigate back to OS selection"""
@@ -1366,7 +1664,7 @@ class LoginDialog(QDialog):
     def __init__(self, workflow: WorkflowManager, parent=None):
         super().__init__(parent)
         self.workflow = workflow
-        self.setWindowTitle("MindLink - Sign In")
+        self.setWindowTitle("MindLink - Sign In To Connect")
         self.setModal(True)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.setMinimumWidth(400)
@@ -1384,7 +1682,7 @@ class LoginDialog(QDialog):
                 break
         
         # UI Elements
-        title_label = QLabel("Sign In")
+        title_label = QLabel("Sign In to Connect")
         title_label.setObjectName("DialogTitle")
         
         subtitle_label = QLabel("Step 3 of 8: Enter your credentials")
@@ -1396,6 +1694,22 @@ class LoginDialog(QDialog):
         cred_layout = QFormLayout(cred_card)
         cred_layout.setContentsMargins(16, 16, 16, 16)
         cred_layout.setSpacing(12)
+        
+        # Error/info message (hidden by default)
+        self.error_info_label = QLabel("")
+        self.error_info_label.setStyleSheet("""
+            font-size: 14px; 
+            color: #dc2626; 
+            padding: 16px; 
+            background: #fef2f2; 
+            border-radius: 8px; 
+            border-left: 4px solid #dc2626;
+            font-weight: 600;
+            line-height: 1.6;
+        """)
+        self.error_info_label.setWordWrap(True)
+        self.error_info_label.setVisible(False)
+        cred_layout.addRow(self.error_info_label)
         
         self.username_edit = QLineEdit()
         saved_username = self.settings.value("username", "")
@@ -1467,12 +1781,7 @@ class LoginDialog(QDialog):
         nav_layout.addWidget(self.back_button)
         nav_layout.addStretch()
         
-        self.next_button = QPushButton("Next →")
-        self.next_button.clicked.connect(self.on_next)
-        self.next_button.setEnabled(False)  # Enable after successful login
-        nav_layout.addWidget(self.next_button)
-        
-        self.login_button = QPushButton("Sign In")
+        self.login_button = QPushButton("Sign In to Connect")
         self.login_button.clicked.connect(self.on_login)
         nav_layout.addWidget(self.login_button)
         
@@ -1500,6 +1809,12 @@ class LoginDialog(QDialog):
         if self._programmatic_close:
             event.accept()
         else:
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
@@ -1507,9 +1822,15 @@ class LoginDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
     
@@ -1523,7 +1844,7 @@ class LoginDialog(QDialog):
             self.password_toggle_btn.setText("👁")  # Open eye
     
     def on_login(self):
-        """Attempt REAL authentication"""
+        """Attempt device connection and REAL authentication"""
         username = self.username_edit.text().strip()
         password = self.password_edit.text()
         
@@ -1531,32 +1852,85 @@ class LoginDialog(QDialog):
             self.status_label.setText("Please enter both email and password")
             return
         
-        self.status_label.setText("Authenticating...")
+        # Hide previous error messages
+        self.error_info_label.setVisible(False)
+        
+        # First check device connection
+        self.status_label.setText("Checking device connection...")
         self.login_button.setEnabled(False)
+        self.back_button.setEnabled(False)
         
-        # Save credentials
-        self.settings.setValue("username", username)
-        self.settings.setValue("password", password)
-        
-        # Use REAL authentication - get login URL from environment
-        login_urls = {
-            "English (en)": "https://en.mindspeller.com/api/cas/token/login",
-            "Dutch (nl)": "https://nl.mindspeller.com/api/cas/token/login",
-            "Local": "http://127.0.0.1:5000/api/cas/token/login"
-        }
-        
-        # Determine which backend URL is set
-        current_backend = BL.BACKEND_URL
-        login_url = None
-        if "stg-en" in current_backend or "en.mindspell" in current_backend:
-            login_url = login_urls["English (en)"]
-        elif "stg-nl" in current_backend or "nl.mindspell" in current_backend:
-            login_url = login_urls["Dutch (nl)"]
-        else:
-            login_url = login_urls["Local"]
-        
-        # Perform REAL authentication
-        QTimer.singleShot(100, lambda: self._perform_login(username, password, login_url))
+        # Run device detection first
+        QTimer.singleShot(100, lambda: self._check_device(username, password))
+    
+    def _check_device(self, username, password):
+        """Check device connection before authentication"""
+        try:
+            # Call the REAL detect_brainlink function
+            port = BL.detect_brainlink()
+            
+            if port:
+                BL.SERIAL_PORT = port
+                self.workflow.main_window.log_message(f"✓ EEG headset detected on port: {port}")
+                
+                # Device detected, proceed with authentication
+                self.status_label.setText("Device connected. Authenticating...")
+                
+                # Save credentials
+                self.settings.setValue("username", username)
+                self.settings.setValue("password", password)
+                
+                # Use REAL authentication - get login URL from environment
+                login_urls = {
+                    "English (en)": "https://en.mindspeller.com/api/cas/token/login",
+                    "Dutch (nl)": "https://nl.mindspeller.com/api/cas/token/login",
+                    "Local": "http://127.0.0.1:5000/api/cas/token/login"
+                }
+                
+                # Determine which backend URL is set
+                current_backend = BL.BACKEND_URL
+                login_url = None
+                if "stg-en" in current_backend or "en.mindspell" in current_backend:
+                    login_url = login_urls["English (en)"]
+                elif "stg-nl" in current_backend or "nl.mindspell" in current_backend:
+                    login_url = login_urls["Dutch (nl)"]
+                else:
+                    login_url = login_urls["Local"]
+                
+                # Perform REAL authentication
+                QTimer.singleShot(100, lambda: self._perform_login(username, password, login_url))
+            else:
+                # Show prominent error message
+                self.error_info_label.setText(
+                    "⚠️ DEVICE CONNECTION FAILED\n\n"
+                    "The EEG headset could not be detected.\n\n"
+                    "TO RESOLVE:\n"
+                    "1. Close this application completely\n"
+                    "2. Turn OFF the EEG headset\n"
+                    "3. Turn ON the EEG headset\n"
+                    "4. Restart this application\n\n"
+                    "Make sure the headset is paired via Bluetooth before restarting."
+                )
+                self.error_info_label.setVisible(True)
+                self.status_label.setText("Device not found. Please follow the instructions above.")
+                self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
+                self.login_button.setEnabled(True)
+                self.back_button.setEnabled(True)
+        except Exception as e:
+            self.error_info_label.setText(
+                "⚠️ DEVICE DETECTION ERROR\n\n"
+                f"Error: {str(e)}\n\n"
+                "TO RESOLVE:\n"
+                "1. Close this application completely\n"
+                "2. Turn OFF the EEG headset\n"
+                "3. Turn ON the EEG headset\n"
+                "4. Restart this application"
+            )
+            self.error_info_label.setVisible(True)
+            self.status_label.setText("Device detection error. Please follow the instructions above.")
+            self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
+            self.login_button.setEnabled(True)
+            self.back_button.setEnabled(True)
     
     def _perform_login(self, username, password, login_url):
         """Perform actual login"""
@@ -1610,22 +1984,58 @@ class LoginDialog(QDialog):
                     # Start device connection
                     self._connect_device()
                     
-                    self.status_label.setText("✓ Login successful")
+                    self.status_label.setText("✓ Login successful. Loading Live EEG...")
                     self.status_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: 600;")
-                    self.next_button.setEnabled(True)
+                    # Hide error message on success
+                    self.error_info_label.setVisible(False)
+                    
+                    # Auto-proceed to Live EEG after 1 second
+                    QTimer.singleShot(1000, self.on_auto_next)
                 else:
-                    self.status_label.setText("✗ Login response didn't contain token")
+                    self.error_info_label.setText(
+                        "⚠️ AUTHENTICATION FAILED\n\n"
+                        "The login response didn't contain an authentication token.\n\n"
+                        "TO RESOLVE:\n"
+                        "1. Verify your credentials are correct\n"
+                        "2. If the problem persists, close this application\n"
+                        "3. Restart the application and try again"
+                    )
+                    self.error_info_label.setVisible(True)
+                    self.status_label.setText("Login failed. Please follow the instructions above.")
                     self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
                     self.login_button.setEnabled(True)
+                    self.back_button.setEnabled(True)
             else:
-                self.status_label.setText(f"✗ Login failed: {login_response.status_code}")
+                self.error_info_label.setText(
+                    "⚠️ AUTHENTICATION FAILED\n\n"
+                    f"Login failed with status code: {login_response.status_code}\n\n"
+                    "TO RESOLVE:\n"
+                    "1. Verify your email and password are correct\n"
+                    "2. Check your internet connection\n"
+                    "3. If the problem persists, close this application\n"
+                    "4. Restart the application and try again"
+                )
+                self.error_info_label.setVisible(True)
+                self.status_label.setText("Login failed. Please follow the instructions above.")
                 self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
                 self.login_button.setEnabled(True)
+                self.back_button.setEnabled(True)
                 
         except Exception as e:
-            self.status_label.setText(f"✗ Login error: {str(e)}")
+            self.error_info_label.setText(
+                "⚠️ AUTHENTICATION ERROR\n\n"
+                f"Error: {str(e)}\n\n"
+                "TO RESOLVE:\n"
+                "1. Check your internet connection\n"
+                "2. Verify your credentials are correct\n"
+                "3. If the problem persists, close this application\n"
+                "4. Restart the application and try again"
+            )
+            self.error_info_label.setVisible(True)
+            self.status_label.setText("Authentication error. Please follow the instructions above.")
             self.status_label.setStyleSheet("color: #dc2626; font-size: 12px;")
             self.login_button.setEnabled(True)
+            self.back_button.setEnabled(True)
     
     def _fetch_user_hwids(self, jwt_token):
         """Fetch authorized HWIDs for user"""
@@ -1691,15 +2101,12 @@ class LoginDialog(QDialog):
         self.status_label.setText("✓ Login successful")
         self.status_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: 600;")
         self.login_button.setEnabled(True)
-        self.login_button.setText("Sign In")
-        # Enable Next button after successful login
-        self.next_button.setEnabled(True)
+        self.login_button.setText("Sign In to Connect")
     
-    def on_next(self):
-        """Proceed to Pathway Selection"""
+    def on_auto_next(self):
+        """Auto-proceed to Live EEG after successful login"""
         self._programmatic_close = True
         self.close()
-        # After login, show Live EEG first (user requested ordering change)
         QTimer.singleShot(100, lambda: self.workflow.go_to_step(WorkflowStep.LIVE_EEG))
     
     def on_back(self):
@@ -1822,6 +2229,12 @@ class PathwaySelectionDialog(QDialog):
         if hasattr(self, '_programmatic_close') and self._programmatic_close:
             event.accept()
         else:
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
@@ -1829,9 +2242,15 @@ class PathwaySelectionDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
     
@@ -1908,7 +2327,7 @@ class LiveEEGDialog(QDialog):
         self.plot_widget.setBackground('k')
         self.plot_widget.setLabel('left', 'Amplitude (µV)')
         self.plot_widget.setLabel('bottom', 'Time (samples)')
-        self.plot_widget.setTitle('Raw EEG Signal', color='w', size='12pt')
+        self.plot_widget.setTitle('Raw EEG Signal (upto 10s visual delay)', color='w', size='12pt')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
         self.curve = self.plot_widget.plot(pen=pg.mkPen(color='#3b82f6', width=2))
@@ -1920,19 +2339,18 @@ class LiveEEGDialog(QDialog):
         self.info_label.setStyleSheet("color: #10b981; font-size: 11px; padding: 6px;")  # Reduced from 13px, 8px
         self.info_label.setAlignment(Qt.AlignCenter)
         
-        # Plotting delay information
-        delay_info = QLabel(
-            "ℹ️ Note: Visual display may lag 5-10 seconds behind real-time. "
-            "This delay is purely visual and does NOT affect data recording. "
-            "Task data is captured instantly through the feature engine as signals arrive. Please wait for upto 20 seconds for the signal to stabilize after wearing the headset."
+        # Important stabilization notice
+        stabilization_notice = QLabel(
+            "⏱️ IMPORTANT: Please wait 20-30 seconds for the signal to stabilize after wearing the headset.\n\n"
+            "Do NOT proceed to the next step until you see 'Signal quality: Good' displayed above."
         )
-        delay_info.setStyleSheet(
-            "color: #475569; font-size: 10px; padding: 4px 8px; "  # Reduced from 11px, 6px 12px
-            "background: #f1f5f9; border-radius: 6px; "
-            "border-left: 3px solid #3b82f6;"
+        stabilization_notice.setStyleSheet(
+            "color: #0369a1; font-size: 13px; padding: 12px 16px; "
+            "background: #e0f2fe; border-radius: 8px; "
+            "border-left: 4px solid #0284c7; font-weight: 600; line-height: 1.5;"
         )
-        delay_info.setWordWrap(True)
-        delay_info.setAlignment(Qt.AlignLeft)
+        stabilization_notice.setWordWrap(True)
+        stabilization_notice.setAlignment(Qt.AlignCenter)
         
         # Device reconnection help button
         self.reconnect_help_button = QPushButton("🔄 Device Disconnected?")
@@ -1951,6 +2369,21 @@ class LiveEEGDialog(QDialog):
             }
         """)
         self.reconnect_help_button.clicked.connect(self.show_reconnect_guidance)
+        
+        # Error/warning message for transmission stopped (hidden by default)
+        self.transmission_error_label = QLabel("")
+        self.transmission_error_label.setStyleSheet("""
+            font-size: 14px; 
+            color: #dc2626; 
+            padding: 16px; 
+            background: #fef2f2; 
+            border-radius: 8px; 
+            border-left: 4px solid #dc2626;
+            font-weight: 600;
+            line-height: 1.6;
+        """)
+        self.transmission_error_label.setWordWrap(True)
+        self.transmission_error_label.setVisible(False)
         
         # Navigation buttons
         nav_layout = QHBoxLayout()
@@ -1983,9 +2416,10 @@ class LiveEEGDialog(QDialog):
         layout.setSpacing(12)  # Reduced from 18
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
+        layout.addWidget(self.transmission_error_label)
+        layout.addWidget(stabilization_notice)
         layout.addWidget(plot_card)
         layout.addWidget(self.info_label)
-        layout.addWidget(delay_info)
         layout.addWidget(self.reconnect_help_button, alignment=Qt.AlignCenter)
         layout.addLayout(nav_layout)
         
@@ -2000,10 +2434,9 @@ class LiveEEGDialog(QDialog):
         self.update_timer.timeout.connect(self.update_plot)
         self.update_timer.start(50)  # 20 Hz update rate
         
-        # Quality tracking for sustained poor signal detection
-        self.quality_history = []  # List of (timestamp, quality_score) tuples
-        self.poor_quality_threshold = 45
-        self.is_noisy = False
+        # Track consecutive no-data occurrences for transmission stop detection
+        self.no_data_count = 0
+        self.transmission_stopped = False
         
         self._programmatic_close = False
     
@@ -2021,34 +2454,47 @@ class LiveEEGDialog(QDialog):
             data = np.array(BL.live_data_buffer[-512:])
             self.curve.setData(data[-500:])  # Plot last 500 for display
             
+            # Reset no-data counter when data is flowing
+            self.no_data_count = 0
+            if self.transmission_stopped:
+                # Data resumed, hide error and re-enable Next
+                self.transmission_stopped = False
+                self.transmission_error_label.setVisible(False)
+                self.next_button.setEnabled(True)
+            
             # Professional signal quality assessment
             quality_score, status, details = assess_eeg_signal_quality(data, fs=512)
             
-            # Track quality history (timestamp, score)
-            current_time = time.time()
-            self.quality_history.append((current_time, quality_score))
-            
-            # Remove entries older than 5 seconds
-            self.quality_history = [(t, q) for t, q in self.quality_history if current_time - t <= 5.0]
-            
-            # Count how many times quality dropped to or below threshold in last 5 seconds
-            poor_count = sum(1 for t, q in self.quality_history if q <= self.poor_quality_threshold)
-            
-            # Update noisy state: need 5+ poor readings in 5 seconds to trigger
-            if poor_count >= 5:
-                self.is_noisy = True
-            elif poor_count == 0:  # All recent readings good - reset
-                self.is_noisy = False
-            # Otherwise maintain current state (hysteresis)
-            
-            # Display only two states: Good or Noisy
-            if self.is_noisy:
-                self.info_label.setText("⚠ Signal quality: Noisy | Try: Adjust headset • Check electrode contact • Minimize movement")
+            # Simplified logic: Only show "Noisy" if headset is not worn
+            # The assess_eeg_signal_quality function already does a good job detecting this
+            if status == "not_worn":
+                self.info_label.setText("⚠ Signal quality: Noisy | Headset not detected - Please wear the headset properly")
                 self.info_label.setStyleSheet("color: #f59e0b; font-size: 13px; padding: 8px;")
             else:
-                self.info_label.setText(f"✓ Signal quality: Good ({quality_score}%) | Data flowing normally")
+                # If user is wearing it, show Good regardless of other quality metrics
+                self.info_label.setText(f"✓ Signal quality: Good | Data flowing normally")
                 self.info_label.setStyleSheet("color: #10b981; font-size: 13px; padding: 8px;")
-        elif len(BL.live_data_buffer) == 0:
+        else:
+            # No data detected - increment counter
+            self.no_data_count += 1
+            
+            # After 20 consecutive checks (~1 second at 50ms intervals), show error
+            if self.no_data_count >= 20 and not self.transmission_stopped:
+                self.transmission_stopped = True
+                self.transmission_error_label.setText(
+                    "⚠️ TRANSMISSION STOPPED\n\n"
+                    "EEG signal transmission has stopped. The device may be disconnected.\n\n"
+                    "TO RESOLVE:\n"
+                    "1. Close this application completely\n"
+                    "2. Turn OFF the EEG headset\n"
+                    "3. Wait 5 seconds\n"
+                    "4. Turn ON the EEG headset\n"
+                    "5. Restart this application\n\n"
+                    "You cannot proceed until the signal is restored."
+                )
+                self.transmission_error_label.setVisible(True)
+                self.next_button.setEnabled(False)
+            
             # Device disconnected or no data
             self.info_label.setText("⚠ No signal detected | Device may be disconnected")
             self.info_label.setStyleSheet("color: #ef4444; font-size: 13px; padding: 8px;")
@@ -2061,9 +2507,9 @@ class LiveEEGDialog(QDialog):
         msg.setText("If your device is disconnected or signal stopped:")
         msg.setInformativeText(
             "<b>Quick Fix Steps:</b><br><br>"
-            "1. <b>Switch off</b> the BrainLink amplifier<br>"
+            "1. <b>Switch off</b> the headset<br>"
             "2. Wait 3-5 seconds<br>"
-            "3. <b>Switch on</b> the amplifier<br>"
+            "3. <b>Switch on</b> the headset<br>"
             "4. Click <b>Back</b> button below<br>"
             "5. Navigate back to <b>Login screen</b><br>"
             "6. <b>Log in again</b> to reconnect the device<br><br>"
@@ -2105,6 +2551,12 @@ class LiveEEGDialog(QDialog):
         if hasattr(self, '_programmatic_close') and self._programmatic_close:
             event.accept()
         else:
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
@@ -2112,13 +2564,17 @@ class LiveEEGDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
-
-
 # ============================================================================
 # STEP 5: CALIBRATION (Using REAL calibration logic)
 # ============================================================================
@@ -2473,12 +2929,8 @@ class CalibrationDialog(QDialog):
         if self.countdown_value > 0:
             self.status_label.setText(f"⏳ Countdown: {self.countdown_value}")
             self.phase_label.setText(f"Listening to audio: {self.countdown_value}...")
-            # Play countdown beep
-            try:
-                import winsound
-                winsound.Beep(800, 200)  # 800Hz, 200ms
-            except:
-                pass
+            # Play countdown beep (cross-platform)
+            play_beep(800, 200)  # 800Hz, 200ms
             self.countdown_value -= 1
         else:
             # Countdown finished, start actual recording
@@ -2640,14 +3092,9 @@ class CalibrationDialog(QDialog):
             print("Dialog not visible, skipping auto_stop_phase")
             return
         
-        # Play completion sound (4 beeps)
-        try:
-            import winsound
-            for _ in range(4):
-                winsound.Beep(1000, 150)
-                QTimer.singleShot(200, lambda: None)  # Brief pause
-        except:
-            pass
+        # Play completion sound (4 beeps - cross-platform)
+        for i in range(4):
+            QTimer.singleShot(i * 200, lambda: play_beep(1000, 150))
             
         try:
             # Stop the calibration phase
@@ -2754,16 +3201,28 @@ class CalibrationDialog(QDialog):
                 event.accept()
             else:
                 # User clicked X button - show confirmation
+                # Temporarily clear WindowStaysOnTopHint so message box appears on top
+                was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+                if was_on_top:
+                    self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                    self.show()
+                
                 reply = QMessageBox.question(
                     self, 'Confirm Exit',
                     'Calibration in progress. Are you sure you want to exit?',
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No
                 )
+                
+                # Restore WindowStaysOnTopHint if it was set
+                if was_on_top:
+                    self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                    self.show()
+                
                 if reply == QMessageBox.Yes:
                     event.accept()
                     # Close the entire application
-                    QtWidgets.QApplication.quit()
+                    cleanup_and_quit()
                 else:
                     event.ignore()
         except Exception as e:
@@ -2932,6 +3391,13 @@ class TaskSelectionDialog(QDialog):
             # User clicked X button - show confirmation
             if self.status_bar:
                 self.status_bar.cleanup()
+            
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
@@ -2939,9 +3405,15 @@ class TaskSelectionDialog(QDialog):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
     
@@ -3223,16 +3695,29 @@ class MultiTaskAnalysisDialog(QDialog):
             # User clicked X button - show confirmation
             if self.status_bar:
                 self.status_bar.cleanup()
+            
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
             reply = QMessageBox.question(
                 self,
                 'Confirm Exit',
-                'Are you sure you want to exit MindLink Analyzer?\\n\\nAll unsaved analysis data will be lost.',
+                'Are you sure you want to exit MindLink Analyzer?\n\nAll unsaved analysis data will be lost.',
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
             if reply == QMessageBox.Yes:
                 event.accept()
-                QtWidgets.QApplication.quit()
+                cleanup_and_quit()
             else:
                 event.ignore()
     
@@ -3882,6 +4367,15 @@ class SequentialBrainLinkAnalyzerWindow(EnhancedBrainLinkAnalyzerWindow):
     
     def closeEvent(self, event):
         """Handle window close with confirmation"""
+        # Temporarily clear WindowStaysOnTopHint from any active dialogs
+        active_dialog = self.workflow.current_dialog
+        was_on_top = False
+        if active_dialog and active_dialog.isVisible():
+            was_on_top = bool(active_dialog.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                active_dialog.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                active_dialog.show()
+        
         # Ask for confirmation before closing
         reply = QMessageBox.question(
             self,
@@ -3890,6 +4384,11 @@ class SequentialBrainLinkAnalyzerWindow(EnhancedBrainLinkAnalyzerWindow):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
+        
+        # Restore WindowStaysOnTopHint if it was set
+        if active_dialog and active_dialog.isVisible() and was_on_top:
+            active_dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            active_dialog.show()
         
         if reply == QMessageBox.Yes:
             # Close any open workflow dialogs (force close without recursion)
@@ -3921,6 +4420,9 @@ class SequentialBrainLinkAnalyzerWindow(EnhancedBrainLinkAnalyzerWindow):
             # Accept the close event
             event.accept()
             
+            # Call parent's closeEvent for any additional cleanup
+            super().closeEvent(event)
+            
             # Force quit the application since we disabled automatic quit on last window close
             QTimer.singleShot(100, lambda: QtWidgets.QApplication.quit())
         else:
@@ -3935,6 +4437,7 @@ class SequentialBrainLinkAnalyzerWindow(EnhancedBrainLinkAnalyzerWindow):
 if __name__ == "__main__":
     import sys
     
+    # Create QApplication first
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle('Fusion')
     
@@ -3944,5 +4447,12 @@ if __name__ == "__main__":
     
     # Start with OS selection workflow
     window = SequentialBrainLinkAnalyzerWindow("Windows")
+    
+    # Close PyInstaller splash screen after app is initialized
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except:
+        pass
     
     sys.exit(app.exec())

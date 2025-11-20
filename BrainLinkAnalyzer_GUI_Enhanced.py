@@ -7070,29 +7070,56 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
 
 
 class AudioFeedback:
-    """Simple auditory cues using winsound on Windows; no-op elsewhere."""
+    """Cross-platform auditory cues using pygame mixer."""
     def __init__(self, target_os: Optional[str] = None):
-        normalized = (target_os or platform.system() or '').strip().lower()
-        self.is_windows = normalized.startswith('win')
-        if self.is_windows:
-            try:
-                import winsound  # noqa: F401
-                self._winsound_available = True
-            except Exception:
-                self._winsound_available = False
-        else:
-            self._winsound_available = False
+        self._audio_available = False
+        try:
+            import pygame.mixer
+            pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+            self._audio_available = True
+        except Exception as e:
+            print(f"Warning: pygame not available, audio feedback disabled: {e}")
+    
+    def _play_beep(self, frequency=800, duration_ms=200):
+        """Generate and play a single beep tone."""
+        if not self._audio_available:
+            return
+        
+        try:
+            import pygame.mixer
+            sample_rate = 22050
+            duration_s = duration_ms / 1000.0
+            num_samples = int(sample_rate * duration_s)
+            
+            # Generate sine wave
+            samples = np.sin(2 * np.pi * frequency * np.linspace(0, duration_s, num_samples))
+            samples = (samples * 32767).astype(np.int16)
+            
+            # Create stereo
+            stereo_samples = np.column_stack((samples, samples))
+            
+            # Play
+            sound = pygame.mixer.Sound(buffer=stereo_samples)
+            sound.play()
+        except Exception as e:
+            print(f"Warning: Could not play beep: {e}")
 
     def _beep(self, pattern):
-        if not self._winsound_available:
+        """Play a pattern of beeps with delays."""
+        if not self._audio_available:
             return
-        import winsound
+        
         def _run():
-            for freq, dur in pattern:
+            for i, (freq, dur) in enumerate(pattern):
                 try:
-                    winsound.Beep(int(freq), int(dur))
-                except Exception:
+                    self._play_beep(int(freq), int(dur))
+                    # Wait for beep to finish before next one
+                    if i < len(pattern) - 1:
+                        time.sleep(dur / 1000.0 + 0.1)  # Small gap between beeps
+                except Exception as e:
+                    print(f"Warning: Beep failed: {e}")
                     time.sleep(dur / 1000.0)
+        
         t = threading.Thread(target=_run, daemon=True)
         t.start()
 

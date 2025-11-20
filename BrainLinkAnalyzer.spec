@@ -95,9 +95,22 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+splash = Splash(
+    'assets\\splash.png',
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=(300, 360),
+    text_size=11,
+    text_color='white',
+    text_default='Loading MindLink Analyzer...',
+    minify_script=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     a.binaries,
     a.datas,
     [],

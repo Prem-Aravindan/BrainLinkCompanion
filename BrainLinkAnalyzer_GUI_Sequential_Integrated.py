@@ -115,12 +115,16 @@ def assess_eeg_signal_quality(data_window, fs=512):
     """
     Professional multi-metric EEG signal quality assessment.
     
-    Based on research-grade EEG quality control methods:
-    1. Amplitude range check (EEG typically 10-100 µV, extreme values indicate artifacts)
-    2. Line noise detection (50/60 Hz power should be minimal after filtering)
-    3. Electrode contact via impedance proxy (variance and baseline wander)
-    4. Motion artifacts (sudden large spikes or sustained high amplitude)
-    5. Statistical properties (kurtosis for artifact detection)
+    Enhanced detection for "headset not worn" condition:
+    - When not worn, device picks up environmental noise (~50-100 µV) that looks like signal
+    - Real EEG has characteristic 1/f spectrum with strong low-frequency content
+    - Not-worn noise lacks the alpha peak (8-12 Hz) and has flatter spectrum
+    
+    Key metrics:
+    1. Alpha band presence (8-12 Hz) - absent when not worn
+    2. Low-frequency dominance (1-8 Hz) - brain signals are low-freq dominant
+    3. Spectral slope (1/f characteristic) - real EEG has negative slope
+    4. Amplitude checks and artifact detection
     
     Returns: (quality_score: 0-100, status: str, details: dict)
     """
@@ -130,7 +134,7 @@ def assess_eeg_signal_quality(data_window, fs=512):
     if arr.size < 256:
         return 0, "insufficient_data", {"reason": "need more samples"}
     
-    # Metric 1: Amplitude range check (EEG should be 10-200 µV typically)
+    # Basic amplitude metrics
     arr_std = np.std(arr)
     arr_mean = np.mean(arr)
     arr_max = np.max(np.abs(arr))
@@ -139,106 +143,179 @@ def assess_eeg_signal_quality(data_window, fs=512):
     details['mean'] = float(arr_mean)
     details['max_amplitude'] = float(arr_max)
     
-    # Very low variance = not worn or poor contact
-    if arr_std < 2.0:  # Less than 2 µV std is suspiciously low
+    # Very low variance = definitely not worn (flatline)
+    if arr_std < 2.0:
         return 10, "not_worn", details
     
-    # Extremely high variance = severe artifacts (but likely still worn)
-    if arr_std > 500:  # More than 500 µV std is extreme noise
+    # Extremely high variance = severe artifacts
+    if arr_std > 500:
         return 15, "severe_artifacts", details
     
-    # Metric 2: Check for realistic EEG amplitude range
-    # Real EEG rarely exceeds 200 µV; values over 500 µV indicate artifacts (but likely worn)
+    # Extreme amplitude = artifacts
     if arr_max > 500:
         return 25, "amplitude_artifacts", details
     
-    # Metric 3: Check baseline stability (DC drift indicates poor contact but likely worn)
-    # Split window into 4 quarters and check mean shift
-    quarter_size = len(arr) // 4
-    quarters_means = [np.mean(arr[i*quarter_size:(i+1)*quarter_size]) for i in range(4)]
-    baseline_drift = np.std(quarters_means)
-    details['baseline_drift'] = float(baseline_drift)
-    
-    if baseline_drift > 30:  # Excessive drift
-        return 35, "poor_contact", details
-    
-    # Metric 4: Check for motion artifacts using kurtosis (likely worn, just moving)
-    # High kurtosis (>5) indicates spiky artifacts
-    from scipy.stats import kurtosis
-    kurt = kurtosis(arr, fisher=True)
-    details['kurtosis'] = float(kurt)
-    
-    if abs(kurt) > 10:  # Very spiky signal
-        return 40, "motion_artifacts", details
-    
-    # Metric 5: Frequency content analysis
+    # ===================================================================
+    # CRITICAL: Frequency-based "not worn" detection
+    # Real EEG has strong low-frequency content and 1/f spectrum
+    # Environmental noise when not worn is more uniform across frequencies
+    # ===================================================================
     try:
         freqs, psd = BaseGUI.compute_psd(arr, fs)
+        total_power = np.sum(psd) + 1e-12
         
-        # Check 50/60 Hz line noise (should be minimal)
+        # Band power calculations
+        idx_delta = (freqs >= 0.5) & (freqs <= 4)    # Delta: 0.5-4 Hz
+        idx_theta = (freqs >= 4) & (freqs <= 8)      # Theta: 4-8 Hz  
+        idx_alpha = (freqs >= 8) & (freqs <= 13)     # Alpha: 8-13 Hz
+        idx_beta = (freqs >= 13) & (freqs <= 30)     # Beta: 13-30 Hz
+        idx_low_freq = (freqs >= 0.5) & (freqs <= 8) # Low freq: 0.5-8 Hz
+        idx_high_freq = freqs >= 30                   # High freq: >30 Hz
+        
+        delta_power = np.sum(psd[idx_delta])
+        theta_power = np.sum(psd[idx_theta])
+        alpha_power = np.sum(psd[idx_alpha])
+        beta_power = np.sum(psd[idx_beta])
+        low_freq_power = np.sum(psd[idx_low_freq])
+        high_freq_power = np.sum(psd[idx_high_freq])
+        
+        # Relative powers
+        delta_ratio = delta_power / total_power
+        theta_ratio = theta_power / total_power
+        alpha_ratio = alpha_power / total_power
+        low_freq_ratio = low_freq_power / total_power
+        high_freq_ratio = high_freq_power / total_power
+        
+        details['delta_ratio'] = float(delta_ratio)
+        details['theta_ratio'] = float(theta_ratio)
+        details['alpha_ratio'] = float(alpha_ratio)
+        details['low_freq_ratio'] = float(low_freq_ratio)
+        details['high_freq_ratio'] = float(high_freq_ratio)
+        
+        # ===================================================================
+        # KEY DETECTION: Real EEG is dominated by low frequencies (delta+theta)
+        # When not worn, power is more evenly distributed (flat spectrum)
+        # ===================================================================
+        
+        # Metric 1: Low-frequency dominance (delta + theta should be > 40% for real EEG)
+        low_freq_dominance = delta_ratio + theta_ratio
+        details['low_freq_dominance'] = float(low_freq_dominance)
+        
+        # Metric 2: Calculate spectral slope (1/f characteristic)
+        # Real EEG has negative slope (more power at low frequencies)
+        # Flat noise has slope near 0
+        try:
+            # Use log-log fit for spectral slope (avoid DC and very high freq)
+            valid_idx = (freqs >= 1) & (freqs <= 40) & (psd > 0)
+            if np.sum(valid_idx) > 10:
+                log_freqs = np.log10(freqs[valid_idx])
+                log_psd = np.log10(psd[valid_idx])
+                slope, _ = np.polyfit(log_freqs, log_psd, 1)
+                details['spectral_slope'] = float(slope)
+            else:
+                slope = 0
+                details['spectral_slope'] = 0.0
+        except Exception:
+            slope = 0
+            details['spectral_slope'] = 0.0
+        
+        # ===================================================================
+        # NOT WORN DETECTION LOGIC
+        # ===================================================================
+        
+        # Condition 1: Low-frequency power too weak (< 30% in delta+theta)
+        # Real EEG has strong delta/theta even during alertness
+        if low_freq_dominance < 0.30:
+            details['not_worn_reason'] = 'low_freq_too_weak'
+            return 20, "not_worn", details
+        
+        # Condition 2: Spectral slope too flat (> -0.3)
+        # Real EEG typically has slope between -1 and -2 (1/f characteristic)
+        # Environmental noise is flatter (slope closer to 0)
+        if slope > -0.3:
+            details['not_worn_reason'] = 'flat_spectrum'
+            return 25, "not_worn", details
+        
+        # Condition 3: High-frequency noise dominates (> 50%)
+        if high_freq_ratio > 0.50:
+            details['not_worn_reason'] = 'high_freq_dominant'
+            return 30, "not_worn", details
+        
+        # Check line noise (50/60 Hz)
         idx_50hz = np.argmin(np.abs(freqs - 50))
         idx_60hz = np.argmin(np.abs(freqs - 60))
         line_noise_50 = psd[idx_50hz] if idx_50hz < len(psd) else 0
         line_noise_60 = psd[idx_60hz] if idx_60hz < len(psd) else 0
         line_noise = max(line_noise_50, line_noise_60)
-        
-        total_power = np.sum(psd)
-        line_noise_ratio = line_noise / (total_power + 1e-12)
+        line_noise_ratio = line_noise / total_power
         details['line_noise_ratio'] = float(line_noise_ratio)
-        
-        # Check EEG band distribution (should have power in 1-30 Hz range)
-        idx_eeg_band = (freqs >= 1) & (freqs <= 30)
-        eeg_band_power = np.sum(psd[idx_eeg_band])
-        eeg_band_ratio = eeg_band_power / (total_power + 1e-12)
-        details['eeg_band_ratio'] = float(eeg_band_ratio)
-        
-        # If less than 20% power in EEG bands, likely not worn (more lenient threshold)
-        if eeg_band_ratio < 0.2:
-            return 45, "not_worn", details
-        
-        # Check high frequency noise (>40 Hz) - treat as noise, not "not worn"
-        idx_high_freq = freqs >= 40
-        high_freq_power = np.sum(psd[idx_high_freq])
-        high_freq_ratio = high_freq_power / (total_power + 1e-12)
-        details['high_freq_ratio'] = float(high_freq_ratio)
-        
-        if high_freq_ratio > 0.6:  # More than 60% high frequency
-            return 50, "excessive_noise", details
         
     except Exception as e:
         details['psd_error'] = str(e)
+        # If PSD fails, fall back to basic checks - be conservative
+        return 40, "analysis_error", details
     
-    # Calculate overall quality score (0-100)
-    # Start at 100 and deduct points for issues
+    # Baseline stability check
+    quarter_size = len(arr) // 4
+    quarters_means = [np.mean(arr[i*quarter_size:(i+1)*quarter_size]) for i in range(4)]
+    baseline_drift = np.std(quarters_means)
+    details['baseline_drift'] = float(baseline_drift)
+    
+    if baseline_drift > 50:
+        return 35, "poor_contact", details
+    
+    # Motion artifacts via kurtosis
+    from scipy.stats import kurtosis
+    kurt = kurtosis(arr, fisher=True)
+    details['kurtosis'] = float(kurt)
+    
+    if abs(kurt) > 15:
+        return 40, "motion_artifacts", details
+    
+    # ===================================================================
+    # Calculate overall quality score for "worn" signals
+    # ===================================================================
     quality_score = 100
     
-    # Deduct for non-optimal but acceptable conditions
-    if arr_std < 5:  # Very low but not zero
-        quality_score -= 20
-    elif arr_std > 200:  # High but not extreme
+    # Penalize weak low-frequency content (but not enough to flag as not worn)
+    if low_freq_dominance < 0.40:
         quality_score -= 15
     
-    if baseline_drift > 15:
+    # Penalize flat spectrum
+    if slope > -0.5:
         quality_score -= 10
     
+    # Penalize high-frequency noise
+    if high_freq_ratio > 0.30:
+        quality_score -= 15
+    
+    # Penalize baseline drift
+    if baseline_drift > 20:
+        quality_score -= 10
+    
+    # Penalize high kurtosis (artifacts)
     if abs(kurt) > 5:
         quality_score -= 10
     
-    if 'high_freq_ratio' in details and details['high_freq_ratio'] > 0.4:
-        quality_score -= 15
-    
-    if 'eeg_band_ratio' in details and details['eeg_band_ratio'] < 0.5:
+    # Penalize line noise
+    if line_noise_ratio > 0.1:
         quality_score -= 10
     
+    # Bonus for good alpha presence (relaxed state indicator)
+    if alpha_ratio > 0.15:
+        quality_score += 5
+    
+    quality_score = max(0, min(100, quality_score))
+    
     # Determine status
-    if quality_score >= 75:
+    if quality_score >= 70:
         status = "good"
     elif quality_score >= 50:
         status = "acceptable"
     else:
         status = "poor"
     
-    return max(0, quality_score), status, details
+    return quality_score, status, details
 
 # Import Qt components directly from PySide6
 from PySide6 import QtCore, QtWidgets, QtGui
@@ -487,18 +564,38 @@ class MindLinkStatusBar(QFrame):
                 
                 quality_score, status, details = assess_eeg_signal_quality(recent_data, fs=512)
                 
-                # Simplified logic: Only show "Noisy" if headset is not worn
+                # Debug output - print every 5 seconds (timer is 500ms)
+                if not hasattr(self, '_debug_counter'):
+                    self._debug_counter = 0
+                self._debug_counter += 1
+                if self._debug_counter >= 10:
+                    self._debug_counter = 0
+                    print(f"[Signal Quality] score={quality_score:.0f}, status={status}")
+                    print(f"  std={details.get('std', 0):.1f}µV, slope={details.get('spectral_slope', 0):.2f}")
+                    print(f"  low_freq_dom={details.get('low_freq_dominance', 0):.2%}, high_freq={details.get('high_freq_ratio', 0):.2%}")
+                    if 'not_worn_reason' in details:
+                        print(f"  NOT WORN reason: {details['not_worn_reason']}")
+                
+                # Show feedback based on status
                 if status == "not_worn":
-                    self.signal_quality.setText("Signal: ⚠ Noisy")
+                    self.signal_quality.setText("Signal: ⚠ Not Worn")
+                    self.signal_quality.setStyleSheet("color: #ef4444; font-weight: 700;")
+                elif status in ["poor_contact", "motion_artifacts", "excessive_noise"]:
+                    self.signal_quality.setText(f"Signal: ⚠ {status.replace('_', ' ').title()}")
                     self.signal_quality.setStyleSheet("color: #f59e0b; font-weight: 700;")
-                else:
+                elif quality_score >= 70:
                     self.signal_quality.setText("Signal: ✓ Good")
                     self.signal_quality.setStyleSheet("color: #10b981; font-weight: 700;")
+                else:
+                    self.signal_quality.setText("Signal: ○ Fair")
+                    self.signal_quality.setStyleSheet("color: #eab308; font-weight: 700;")
             else:
                 self.signal_quality.setText("Signal: Waiting...")
                 self.signal_quality.setStyleSheet("color: #94a3b8; font-weight: 700;")
         except Exception as e:
             print(f"Warning: Error updating status: {e}")
+            import traceback
+            traceback.print_exc()
             pass
     
     def show_help_dialog(self):

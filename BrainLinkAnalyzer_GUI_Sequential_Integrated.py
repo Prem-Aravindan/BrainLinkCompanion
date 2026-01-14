@@ -147,18 +147,10 @@ def assess_eeg_signal_quality(data_window, fs=512):
     if arr_std < 2.0:
         return 10, "not_worn", details
     
-    # Extremely high variance = severe artifacts
-    if arr_std > 500:
-        return 15, "severe_artifacts", details
-    
-    # Extreme amplitude = artifacts
-    if arr_max > 500:
-        return 25, "amplitude_artifacts", details
-    
     # ===================================================================
-    # CRITICAL: Frequency-based "not worn" detection
-    # Real EEG has strong low-frequency content and 1/f spectrum
-    # Environmental noise when not worn is more uniform across frequencies
+    # CRITICAL: Frequency-based "not worn" detection FIRST
+    # Must run spectral analysis before amplitude checks because
+    # environmental noise when not worn can have high amplitude
     # ===================================================================
     try:
         freqs, psd = BaseGUI.compute_psd(arr, fs)
@@ -254,6 +246,15 @@ def assess_eeg_signal_quality(data_window, fs=512):
         details['psd_error'] = str(e)
         # If PSD fails, fall back to basic checks - be conservative
         return 40, "analysis_error", details
+    
+    # ===================================================================
+    # If we get here, spectral analysis indicates headset IS worn
+    # Now check for amplitude-based artifacts (user is wearing but signal has issues)
+    # ===================================================================
+    
+    # Extremely high variance = severe artifacts (but headset is worn)
+    if arr_std > 500:
+        return 15, "severe_artifacts", details
     
     # Baseline stability check
     quarter_size = len(arr) // 4
@@ -576,19 +577,13 @@ class MindLinkStatusBar(QFrame):
                     if 'not_worn_reason' in details:
                         print(f"  NOT WORN reason: {details['not_worn_reason']}")
                 
-                # Show feedback based on status
+                # Simplified logic: Only show "Noisy" if headset is not worn
                 if status == "not_worn":
-                    self.signal_quality.setText("Signal: ⚠ Not Worn")
-                    self.signal_quality.setStyleSheet("color: #ef4444; font-weight: 700;")
-                elif status in ["poor_contact", "motion_artifacts", "excessive_noise"]:
-                    self.signal_quality.setText(f"Signal: ⚠ {status.replace('_', ' ').title()}")
+                    self.signal_quality.setText("Signal: ⚠ Noisy")
                     self.signal_quality.setStyleSheet("color: #f59e0b; font-weight: 700;")
-                elif quality_score >= 70:
+                else:
                     self.signal_quality.setText("Signal: ✓ Good")
                     self.signal_quality.setStyleSheet("color: #10b981; font-weight: 700;")
-                else:
-                    self.signal_quality.setText("Signal: ○ Fair")
-                    self.signal_quality.setStyleSheet("color: #eab308; font-weight: 700;")
             else:
                 self.signal_quality.setText("Signal: Waiting...")
                 self.signal_quality.setStyleSheet("color: #94a3b8; font-weight: 700;")
@@ -1305,11 +1300,12 @@ class WorkflowStep:
     OS_SELECTION = 0
     ENVIRONMENT_SELECTION = 1
     LOGIN = 2
-    LIVE_EEG = 3
-    PATHWAY_SELECTION = 4
-    CALIBRATION = 5
-    TASK_SELECTION = 6
-    MULTI_TASK_ANALYSIS = 7
+    PARTNER_ID = 3
+    LIVE_EEG = 4
+    PATHWAY_SELECTION = 5
+    CALIBRATION = 6
+    TASK_SELECTION = 7
+    MULTI_TASK_ANALYSIS = 8
 
 
 class WorkflowManager:
@@ -1340,6 +1336,8 @@ class WorkflowManager:
             self._show_os_selection()
         elif step == WorkflowStep.ENVIRONMENT_SELECTION:
             self._show_environment_selection()
+        elif step == WorkflowStep.PARTNER_ID:
+            self._show_partner_id()
         elif step == WorkflowStep.LOGIN:
             self._show_login()
         elif step == WorkflowStep.PATHWAY_SELECTION:
@@ -1375,6 +1373,13 @@ class WorkflowManager:
         dialog = EnvironmentSelectionDialog(self)
         self.current_dialog = dialog
         dialog.show()  # Use show() instead of exec()
+        dialog.raise_()
+        dialog.activateWindow()
+    
+    def _show_partner_id(self):
+        dialog = PartnerIDDialog(self)
+        self.current_dialog = dialog
+        dialog.show()
         dialog.raise_()
         dialog.activateWindow()
     
@@ -1451,7 +1456,7 @@ class OSSelectionDialog(QDialog):
         title_label = QLabel("Welcome to MindLink Analyzer")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 1 of 8: Choose your Operating System")
+        subtitle_label = QLabel("Step 1 of 9: Choose your Operating System")
         subtitle_label.setObjectName("DialogSubtitle")
         
         card = QFrame()
@@ -1563,7 +1568,7 @@ class EnvironmentSelectionDialog(QDialog):
         title_label = QLabel("Select Region")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 2 of 8: Choose your region")
+        subtitle_label = QLabel("Step 2 of 9: Choose your region")
         subtitle_label.setObjectName("DialogSubtitle")
         
         # Environment selection card
@@ -1733,10 +1738,19 @@ class EnvironmentSelectionDialog(QDialog):
             "Local": "http://127.0.0.1:5000/api/cas/token/login"
         }
         
+        # Region mapping for API calls that require region parameter
+        region_mapping = {
+            "English (en)": "be",  # Belgium English
+            "Dutch (nl)": "be",     # Belgium Dutch (same region as English)
+            "Local": "be"           # Local development defaults to Belgium
+        }
+        
         # Set GLOBAL variables used by the base GUI
         BL.BACKEND_URL = backend_urls[env_name]
-        # Store login URL for later
-        self.login_url = login_urls[env_name]
+        # Store login URL and region in main window for later use in login dialog
+        self.workflow.main_window.login_url = login_urls[env_name]
+        self.workflow.main_window.current_region = region_mapping[env_name]
+        self.workflow.main_window.selected_environment = env_name
     
     def on_back(self):
         """Navigate back to OS selection"""
@@ -1749,6 +1763,233 @@ class EnvironmentSelectionDialog(QDialog):
         self._programmatic_close = True
         self.close()
         QTimer.singleShot(100, lambda: self.workflow.go_to_step(WorkflowStep.LOGIN))
+
+
+# ============================================================================
+# STEP 2.5: PARTNER ID INPUT
+# ============================================================================
+
+class PartnerIDDialog(QDialog):
+    """Step 2.5: Partner ID input"""
+    
+    def __init__(self, workflow: WorkflowManager, parent=None):
+        super().__init__(parent)
+        self.workflow = workflow
+        self.setWindowTitle("MindLink - Partner ID")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.setMinimumWidth(400)
+        
+        # Set window icon
+        set_window_icon(self)
+        
+        # UI Elements
+        title_label = QLabel("Enter Partner ID")
+        title_label.setObjectName("DialogTitle")
+        
+        subtitle_label = QLabel("Step 4 of 9: Provide your partner identification")
+        subtitle_label.setObjectName("DialogSubtitle")
+        
+        # Partner ID card
+        partner_card = QFrame()
+        partner_card.setObjectName("DialogCard")
+        partner_layout = QVBoxLayout(partner_card)
+        partner_layout.setContentsMargins(16, 16, 16, 16)
+        partner_layout.setSpacing(12)
+        
+        partner_label = QLabel("Partner ID:")
+        partner_label.setObjectName("DialogSectionLabel")
+        
+        # Partner ID input with eye toggle (same pattern as password)
+        partner_input_container = QWidget()
+        partner_input_layout = QHBoxLayout(partner_input_container)
+        partner_input_layout.setContentsMargins(0, 0, 0, 0)
+        partner_input_layout.setSpacing(4)
+        
+        self.partner_edit = QLineEdit()
+        self.partner_edit.setPlaceholderText("Enter your partner ID")
+        self.partner_edit.setEchoMode(QLineEdit.Password)
+        self.partner_edit.setClearButtonEnabled(True)
+        self.partner_edit.returnPressed.connect(self.on_next)
+        
+        # Eye icon toggle button
+        self.partner_toggle_btn = QPushButton("👁")
+        self.partner_toggle_btn.setFixedSize(32, 32)
+        self.partner_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f5f9;
+                color: #64748b;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                font-size: 16px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #e2e8f0;
+                border-color: #94a3b8;
+            }
+            QPushButton:pressed {
+                background-color: #cbd5e1;
+            }
+        """)
+        self.partner_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.partner_toggle_btn.clicked.connect(self.toggle_partner_visibility)
+        
+        partner_input_layout.addWidget(self.partner_edit)
+        partner_input_layout.addWidget(self.partner_toggle_btn)
+        
+        partner_layout.addWidget(partner_label)
+        partner_layout.addWidget(partner_input_container)
+        
+        # Info text
+        info_label = QLabel("ℹ️ This partner ID will be used for data association when seeding reports to the database.")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-size: 12px; color: #3b82f6; padding: 12px; background: #eff6ff; border-radius: 6px; border-left: 3px solid #3b82f6;")
+        
+        # Navigation buttons
+        nav_layout = QHBoxLayout()
+        
+        self.back_button = QPushButton("← Back")
+        self.back_button.clicked.connect(self.on_back)
+        self.back_button.setStyleSheet("""
+            QPushButton {
+                background-color: #e2e8f0;
+                color: #475569;
+            }
+            QPushButton:hover {
+                background-color: #cbd5e1;
+            }
+        """)
+        
+        nav_layout.addWidget(self.back_button)
+        nav_layout.addStretch()
+        
+        self.next_button = QPushButton("Next →")
+        self.next_button.clicked.connect(self.on_next)
+        nav_layout.addWidget(self.next_button)
+        
+        # Layout assembly
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(partner_card)
+        layout.addWidget(info_label)
+        layout.addLayout(nav_layout)
+        
+        self.setLayout(layout)
+        apply_modern_dialog_theme(self)
+        
+        # Add help button
+        add_help_button_to_dialog(self)
+        self._programmatic_close = False
+    
+    def closeEvent(self, event):
+        """Handle dialog close - only trigger confirmation if user clicked X"""
+        if self._programmatic_close:
+            event.accept()
+        else:
+            # Temporarily clear WindowStaysOnTopHint so message box appears on top
+            was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                self.show()
+            
+            reply = QMessageBox.question(
+                self,
+                'Confirm Exit',
+                'Are you sure you want to exit MindLink Analyzer?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            # Restore WindowStaysOnTopHint if it was set
+            if was_on_top:
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                self.show()
+            
+            if reply == QMessageBox.Yes:
+                event.accept()
+                cleanup_and_quit()
+            else:
+                event.ignore()
+    
+    def toggle_partner_visibility(self):
+        """Toggle partner ID visibility with eye icon"""
+        if self.partner_edit.echoMode() == QLineEdit.Password:
+            self.partner_edit.setEchoMode(QLineEdit.Normal)
+            self.partner_toggle_btn.setText("👁‍🗨")  # Crossed eye
+        else:
+            self.partner_edit.setEchoMode(QLineEdit.Password)
+            self.partner_toggle_btn.setText("👁")  # Open eye
+    
+    def on_back(self):
+        """Navigate back to environment selection"""
+        self._programmatic_close = True
+        self.close()
+        QTimer.singleShot(100, lambda: self.workflow.go_back())
+    
+    def on_next(self):
+        """Save partner ID and proceed to login"""
+        partner_id = self.partner_edit.text().strip()
+        
+        if not partner_id:
+            QMessageBox.warning(
+                self,
+                "Partner ID Required",
+                "Please enter a partner ID to continue."
+            )
+            return
+        
+        # Validate partner ID against the fetched partners list
+        partners_list = getattr(self.workflow.main_window, 'partners_list', [])
+        
+        if partners_list:
+            # Extract partner IDs from the partners list
+            # Partners list structure: [{"id": 1, "partner_id": "PARTNER_000001", "name": "Partner Name", ...}, ...]
+            valid_partner_ids = []
+            partner_details = {}  # Store full details for logging
+            for partner in partners_list:
+                if isinstance(partner, dict):
+                    # Get the partner_id field (e.g., "PARTNER_000001")
+                    partner_id_value = partner.get('partner_id')
+                    if partner_id_value is not None:
+                        valid_partner_ids.append(partner_id_value)
+                        partner_details[partner_id_value] = partner
+            
+            print(f"\n>>> PARTNER VALIDATION <<<")
+            print(f"Valid Partner IDs: {valid_partner_ids}")
+            print(f"User entered: {partner_id}")
+            print(f"Match found: {partner_id in valid_partner_ids}")
+            
+            # Check if entered partner_id is in the valid list
+            if partner_id not in valid_partner_ids:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Partner ID",
+                    f"The partner ID '{partner_id}' is not recognized.\n\n"
+                    "Please check your partner ID and try again.\n\n"
+                    "If you believe this is an error, please contact Mindspeller for assistance."
+                )
+                return
+            
+            # Log successful validation
+            if partner_id in partner_details:
+                partner_info = partner_details[partner_id]
+                self.workflow.main_window.log_message(f"✓ Partner validated: {partner_info.get('name', 'Unknown')} ({partner_id})")
+        else:
+            # If partners list is empty, show a warning but allow to proceed
+            self.workflow.main_window.log_message("Warning: Could not validate partner ID (partners list not available)")
+        
+        # Store partner ID in main window
+        self.workflow.main_window.partner_id = partner_id
+        self.workflow.main_window.log_message(f"✓ Partner ID saved and validated: {partner_id}")
+        
+        # Proceed to Live EEG
+        self._programmatic_close = True
+        self.close()
+        QTimer.singleShot(100, lambda: self.workflow.go_to_step(WorkflowStep.LIVE_EEG))
 
 
 # ============================================================================
@@ -1782,7 +2023,7 @@ class LoginDialog(QDialog):
         title_label = QLabel("Sign In to Connect")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 3 of 8: Enter your credentials")
+        subtitle_label = QLabel("Step 3 of 9: Enter your credentials")
         subtitle_label.setObjectName("DialogSubtitle")
         
         # Credentials card
@@ -1977,22 +2218,28 @@ class LoginDialog(QDialog):
                 self.settings.setValue("username", username)
                 self.settings.setValue("password", password)
                 
-                # Use REAL authentication - get login URL from environment
-                login_urls = {
-                    "English (en)": "https://en.mindspeller.com/api/cas/token/login",
-                    "Dutch (nl)": "https://nl.mindspeller.com/api/cas/token/login",
-                    "Local": "http://127.0.0.1:5000/api/cas/token/login"
-                }
+                # Get login URL from main window (set in environment selection)
+                login_url = getattr(self.workflow.main_window, 'login_url', None)
                 
-                # Determine which backend URL is set
-                current_backend = BL.BACKEND_URL
-                login_url = None
-                if "stg-en" in current_backend or "en.mindspell" in current_backend:
-                    login_url = login_urls["English (en)"]
-                elif "stg-nl" in current_backend or "nl.mindspell" in current_backend:
-                    login_url = login_urls["Dutch (nl)"]
-                else:
-                    login_url = login_urls["Local"]
+                # Fallback if not set
+                if not login_url:
+                    login_urls = {
+                        "English (en)": "https://en.mindspeller.com/api/cas/token/login",
+                        "Dutch (nl)": "https://nl.mindspeller.com/api/cas/token/login",
+                        "Local": "http://127.0.0.1:5000/api/cas/token/login"
+                    }
+                    
+                    # Determine which backend URL is set
+                    current_backend = BL.BACKEND_URL
+                    if "en" in current_backend or "en.mindspeller" in current_backend:
+                        login_url = login_urls["English (en)"]
+                    elif "nl" in current_backend or "nl.mindspeller" in current_backend:
+                        login_url = login_urls["Dutch (nl)"]
+                    else:
+                        login_url = login_urls["Local"]
+                
+                # Store login_url in self for API calls
+                self.login_url = login_url
                 
                 # Perform REAL authentication
                 QTimer.singleShot(100, lambda: self._perform_login(username, password, login_url))
@@ -2038,18 +2285,34 @@ class LoginDialog(QDialog):
             "password": password
         }
         
+        print("\n" + "="*60)
+        print(">>> LOGIN ATTEMPT <<<")
+        print(f"URL: {login_url}")
+        print(f"Username: {username}")
+        print(f"Password: {'*' * len(password)}")
+        print(f"Payload: {login_payload}")
+        print("="*60 + "\n")
+        
         try:
             self.workflow.main_window.log_message(f"Connecting to {login_url}")
             
-            # Try with certificate verification first
+            # For local development, skip SSL verification
+            is_local = "127.0.0.1" in login_url or "localhost" in login_url
+            
+            # Try with certificate verification first (skip for local)
             try:
                 login_response = requests.post(
                     login_url, 
                     json=login_payload,
                     headers={"Content-Type": "application/json"},
                     timeout=10,
-                    verify=True
+                    verify=not is_local  # Skip SSL verification for local
                 )
+                
+                print(f"Login Response Status: {login_response.status_code}")
+                print(f"Login Response Headers: {dict(login_response.headers)}")
+                print(f"Login Response Body: {login_response.text[:500]}")  # First 500 chars
+                
             except requests.exceptions.ProxyError as e:
                 self.workflow.main_window.log_message(f"Proxy error, retrying without proxy...")
                 direct_session = requests.Session()
@@ -2075,18 +2338,24 @@ class LoginDialog(QDialog):
                         self.workflow.main_window.log_message(f"✓ Hardware ID received: {hwid}")
                         BL.ALLOWED_HWIDS = [hwid]
                     
+                    # Fetch userData from dedicated endpoint
+                    self._fetch_user_data(jwt_token)
+                    
+                    # Fetch partners list for validation
+                    self._fetch_partners_list(jwt_token)
+                    
                     # Fetch user HWIDs
                     self._fetch_user_hwids(jwt_token)
                     
                     # Start device connection
                     self._connect_device()
                     
-                    self.status_label.setText("✓ Login successful. Loading Live EEG...")
+                    self.status_label.setText("✓ Login successful. Please enter Partner ID...")
                     self.status_label.setStyleSheet("color: #10b981; font-size: 12px; font-weight: 600;")
                     # Hide error message on success
                     self.error_info_label.setVisible(False)
                     
-                    # Auto-proceed to Live EEG after 1 second
+                    # Auto-proceed to Partner ID after 1 second
                     QTimer.singleShot(1000, self.on_auto_next)
                 else:
                     self.error_info_label.setText(
@@ -2134,11 +2403,128 @@ class LoginDialog(QDialog):
             self.login_button.setEnabled(True)
             self.back_button.setEnabled(True)
     
+    def _fetch_user_data(self, jwt_token):
+        """Fetch user data from /api/cas/users/current_user endpoint"""
+        import requests
+        
+        print("\n" + "="*60)
+        print(">>> _fetch_user_data CALLED <<<")
+        print("="*60)
+        
+        # Use login URL base instead of backend URL
+        # Remove /token/login from the end to get the base /api/cas
+        api_base = self.login_url.replace("/token/login", "")
+        user_data_url = f"{api_base}/users/current_user"
+        
+        print(f"API Base: {api_base}")
+        print(f"Full URL: {user_data_url}")
+        print(f"JWT Token (first 20 chars): {jwt_token[:20]}...")
+        
+        try:
+            self.workflow.main_window.log_message(f"Fetching user data from {user_data_url}")
+            
+            user_response = requests.get(
+                user_data_url,
+                headers={"X-Authorization": f"Bearer {jwt_token}"},
+                timeout=10
+            )
+            
+            print(f"Response Status Code: {user_response.status_code}")
+            print(f"Response Headers: {dict(user_response.headers)}")
+            
+            if user_response.status_code == 200:
+                response_json = user_response.json()
+                print(f"Full Response JSON: {response_json}")
+                
+                user_data = response_json.get("data", {})
+                print(f"\n>>> USER DATA EXTRACTED <<<")
+                print(user_data)
+                print("="*60 + "\n")
+                
+                self.workflow.main_window.user_data = user_data
+                self.workflow.main_window.log_message(f"✓ User data fetched successfully")
+                
+                # Log initial_protocol status for debugging
+                initial_protocol = user_data.get('initial_protocol', '')
+                if initial_protocol:
+                    self.workflow.main_window.log_message(f"✓ User has completed initial protocol: {initial_protocol}")
+                    print(f"Initial protocol found: {initial_protocol}")
+                else:
+                    self.workflow.main_window.log_message("ℹ User has not completed initial protocol yet")
+                    print("No initial_protocol found (user is new)")
+            else:
+                print(f"ERROR: Status code {user_response.status_code}")
+                print(f"Response Text: {user_response.text}")
+                self.workflow.main_window.log_message(f"Warning: Could not fetch user data (status {user_response.status_code})")
+                self.workflow.main_window.user_data = {}
+        except Exception as e:
+            print(f"EXCEPTION in _fetch_user_data: {e}")
+            import traceback
+            traceback.print_exc()
+            self.workflow.main_window.log_message(f"Error fetching user data: {e}")
+            self.workflow.main_window.user_data = {}
+    
+    def _fetch_partners_list(self, jwt_token):
+        """Fetch the list of available partners from API"""
+        import requests
+        
+        print("\n" + "="*60)
+        print(">>> _fetch_partners_list CALLED <<<")
+        print("="*60)
+        
+        # Use login URL base instead of backend URL
+        api_base = self.login_url.replace("/token/login", "")
+        
+        # Use 'all' to get all partner IDs regardless of region
+        region = 'all'
+        partners_url = f"{api_base}/partners/list?region={region}"
+        
+        print(f"Partners List URL: {partners_url}")
+        print(f"Region Parameter: {region}")
+        
+        try:
+            self.workflow.main_window.log_message(f"Fetching partners list from {partners_url}")
+            
+            partners_response = requests.get(
+                partners_url,
+                headers={"X-Authorization": f"Bearer {jwt_token}"},
+                timeout=10,
+                verify=False if "127.0.0.1" in self.login_url else True
+            )
+            
+            print(f"Response Status Code: {partners_response.status_code}")
+            
+            if partners_response.status_code == 200:
+                response_json = partners_response.json()
+                print(f"Full Response JSON: {response_json}")
+                
+                partners_list = response_json.get("partners", [])
+                print(f"\n>>> PARTNERS LIST EXTRACTED <<<")
+                print(f"Number of partners: {len(partners_list)}")
+                for partner in partners_list[:5]:  # Show first 5 for debugging
+                    print(f"  - Partner: {partner}")
+                print("="*60 + "\n")
+                
+                self.workflow.main_window.partners_list = partners_list
+                self.workflow.main_window.log_message(f"✓ Fetched {len(partners_list)} partners")
+            else:
+                print(f"ERROR: Status code {partners_response.status_code}")
+                print(f"Response Text: {partners_response.text}")
+                self.workflow.main_window.log_message(f"Warning: Could not fetch partners list (status {partners_response.status_code})")
+                self.workflow.main_window.partners_list = []
+        except Exception as e:
+            print(f"EXCEPTION in _fetch_partners_list: {e}")
+            import traceback
+            traceback.print_exc()
+            self.workflow.main_window.log_message(f"Error fetching partners list: {e}")
+            self.workflow.main_window.partners_list = []
+    
     def _fetch_user_hwids(self, jwt_token):
         """Fetch authorized HWIDs for user"""
         import requests
         
-        api_base = BL.BACKEND_URL.replace("/brainlink_data", "")
+        # Use login URL base instead of backend URL
+        api_base = self.login_url.replace("/token/login", "")
         try:
             hwids_url = f"{api_base}/users/hwids"
             self.workflow.main_window.log_message(f"Fetching authorized device IDs from {hwids_url}")
@@ -2201,10 +2587,10 @@ class LoginDialog(QDialog):
         self.login_button.setText("Sign In to Connect")
     
     def on_auto_next(self):
-        """Auto-proceed to Live EEG after successful login"""
+        """Auto-proceed to Partner ID after successful login"""
         self._programmatic_close = True
         self.close()
-        QTimer.singleShot(100, lambda: self.workflow.go_to_step(WorkflowStep.LIVE_EEG))
+        QTimer.singleShot(100, lambda: self.workflow.go_to_step(WorkflowStep.PARTNER_ID))
     
     def on_back(self):
         """Navigate back"""
@@ -2235,7 +2621,7 @@ class PathwaySelectionDialog(QDialog):
         title_label = QLabel("Choose Your Pathway")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 5 of 8: Select the flow type to tailor your task list")
+        subtitle_label = QLabel("Step 6 of 9: Select the flow type to tailor your task list")
         subtitle_label.setObjectName("DialogSubtitle")
         subtitle_label.setWordWrap(True)
         
@@ -2409,7 +2795,7 @@ class LiveEEGDialog(QDialog):
         title_label.setObjectName("DialogTitle")
         title_label.setStyleSheet("font-size: 16px; font-weight: 600;")  # Reduced from 18px
         
-        subtitle_label = QLabel("Step 4 of 8: Monitoring real brain activity")
+        subtitle_label = QLabel("Step 5 of 9: Monitoring real brain activity")
         subtitle_label.setObjectName("DialogSubtitle")
         subtitle_label.setStyleSheet("font-size: 11px;")  # Reduced from 13px
         
@@ -2545,6 +2931,15 @@ class LiveEEGDialog(QDialog):
         in real-time through the feature_engine which processes data immediately
         as it arrives via the onRaw callback. This plot is purely for visualization.
         """
+        # Debug: Print buffer size every 2 seconds
+        if not hasattr(self, '_plot_debug_counter'):
+            self._plot_debug_counter = 0
+        self._plot_debug_counter += 1
+        if self._plot_debug_counter >= 40:  # Every 2 seconds at 50ms
+            self._plot_debug_counter = 0
+            buf_size = len(BL.live_data_buffer)
+            print(f"[Plot Debug] Buffer size: {buf_size} samples ({buf_size/512:.1f}s of data)")
+        
         # Use the REAL data buffer from the base GUI
         if len(BL.live_data_buffer) >= 512:
             import time
@@ -2559,18 +2954,17 @@ class LiveEEGDialog(QDialog):
                 self.transmission_error_label.setVisible(False)
                 self.next_button.setEnabled(True)
             
-            # Professional signal quality assessment
+            # Professional signal quality assessment (same simplified logic as header)
             quality_score, status, details = assess_eeg_signal_quality(data, fs=512)
             
             # Simplified logic: Only show "Noisy" if headset is not worn
-            # The assess_eeg_signal_quality function already does a good job detecting this
             if status == "not_worn":
                 self.info_label.setText("⚠ Signal quality: Noisy | Headset not detected - Please wear the headset properly")
-                self.info_label.setStyleSheet("color: #f59e0b; font-size: 13px; padding: 8px;")
+                self.info_label.setStyleSheet("color: #f59e0b; font-size: 13px; padding: 8px; font-weight: 600;")
             else:
                 # If user is wearing it, show Good regardless of other quality metrics
                 self.info_label.setText(f"✓ Signal quality: Good | Data flowing normally")
-                self.info_label.setStyleSheet("color: #10b981; font-size: 13px; padding: 8px;")
+                self.info_label.setStyleSheet("color: #10b981; font-size: 13px; padding: 8px; font-weight: 600;")
         else:
             # No data detected - increment counter
             self.no_data_count += 1
@@ -2699,7 +3093,7 @@ class CalibrationDialog(QDialog):
         title_label = QLabel("Baseline Calibration")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 6 of 8: Establish your baseline brain activity")
+        subtitle_label = QLabel("Step 7 of 9: Establish your baseline brain activity")
         subtitle_label.setObjectName("DialogSubtitle")
         
         # Instructions card
@@ -3365,7 +3759,7 @@ class TaskSelectionDialog(QDialog):
         title_label = QLabel("Cognitive Tasks")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 7 of 8: Select tasks to perform")
+        subtitle_label = QLabel("Step 8 of 9: Select tasks to perform")
         subtitle_label.setObjectName("DialogSubtitle")
         
         # Task selection card
@@ -3380,10 +3774,35 @@ class TaskSelectionDialog(QDialog):
         
         self.task_combo = QComboBox()
         # Populate with task names as display text and task IDs as data
+        # Get completed tasks to disable them
+        completed_tasks = self._get_completed_task_ids()
+        
+        # Basic tasks that don't need 'Advanced' tag
+        basic_tasks = [ 'visual_imagery', 'attention_focus', 'mental_math', 'emotion_face']
+        
         for task_id in self.available_task_ids:
             if task_id in BL.AVAILABLE_TASKS:
                 task_name = BL.AVAILABLE_TASKS[task_id].get('name', task_id)
-                self.task_combo.addItem(task_name, task_id)  # Display name, store ID as data
+                
+                # Add 'Advanced' tag for non-basic tasks
+                if task_id not in basic_tasks:
+                    task_name = f"{task_name} (Advanced)"
+                
+                # Mark completed tasks with checkmark
+                if task_id in completed_tasks:
+                    display_name = f"✓ {task_name} (Completed)"
+                else:
+                    display_name = task_name
+                
+                self.task_combo.addItem(display_name, task_id)  # Display name, store ID as data
+                
+                # Disable the item if task is already completed
+                if task_id in completed_tasks:
+                    model = self.task_combo.model()
+                    item = model.item(self.task_combo.count() - 1)
+                    item.setEnabled(False)
+                    item.setToolTip("This task has already been completed")
+        
         self.task_combo.currentIndexChanged.connect(self.update_task_preview)
         
         task_layout.addWidget(task_label)
@@ -3466,6 +3885,12 @@ class TaskSelectionDialog(QDialog):
         self.update_task_preview()
         self._programmatic_close = False
     
+    def _get_completed_task_ids(self):
+        """Get list of task IDs that have already been completed"""
+        tasks_data = self.workflow.main_window.feature_engine.calibration_data.get('tasks', {})
+        completed_tasks = [t for t in tasks_data.keys() if t not in ['baseline', 'eyes_closed', 'eyes_open']]
+        return completed_tasks
+    
     def _center_on_screen(self):
         """Center the dialog on the screen"""
         try:
@@ -3519,6 +3944,10 @@ class TaskSelectionDialog(QDialog):
         # Get task ID from combo box data (not the display text)
         task_id = self.task_combo.currentData()
         
+        # Check if task is already completed
+        completed_tasks = self._get_completed_task_ids()
+        is_completed = task_id in completed_tasks
+        
         # Get task info from BL.AVAILABLE_TASKS using task_id
         if task_id and task_id in BL.AVAILABLE_TASKS:
             task_info = BL.AVAILABLE_TASKS[task_id]
@@ -3527,15 +3956,31 @@ class TaskSelectionDialog(QDialog):
             duration = task_info.get('duration', 60)
             instructions = task_info.get('instructions', '')
             
-            preview_text = f"<b>{task_name}</b><br><br>"
+            preview_text = f"<b>{task_name}</b>"
+            
+            if is_completed:
+                preview_text += " <span style='color: #10b981; font-weight: 600;'>✓ Completed</span>"
+            
+            preview_text += "<br><br>"
             preview_text += f"Description: {desc}<br>"
             preview_text += f"Duration: ~{duration} seconds<br><br>"
             if instructions:
                 preview_text += f"Instructions: {instructions}"
             
+            if is_completed:
+                preview_text += "<br><br><span style='color: #f59e0b; font-weight: 600;'>⚠️ This task has already been completed. Please select a different task.</span>"
+            
             self.task_description.setText(preview_text)
+            
+            # Disable start button if task is completed
+            self.start_task_button.setEnabled(not is_completed)
+            if is_completed:
+                self.start_task_button.setText("Task Already Completed")
+            else:
+                self.start_task_button.setText("Start This Task")
         else:
             self.task_description.setText("Task information not available")
+            self.start_task_button.setEnabled(False)
     
     def start_selected_task(self):
         """Launch the REAL task using main window's start_task method"""
@@ -3545,6 +3990,16 @@ class TaskSelectionDialog(QDialog):
         # Verify task_id exists
         if not task_id or task_id not in BL.AVAILABLE_TASKS:
             QMessageBox.warning(self, "Invalid Task", f"Task '{task_id}' not found in available tasks.")
+            return
+        
+        # Check if task is already completed
+        completed_tasks = self._get_completed_task_ids()
+        if task_id in completed_tasks:
+            QMessageBox.warning(
+                self, 
+                "Task Already Completed", 
+                f"The task '{BL.AVAILABLE_TASKS[task_id].get('name', task_id)}' has already been completed.\n\nPlease select a different task."
+            )
             return
         
         # Set the task in the combo box if the main window has one
@@ -3589,10 +4044,53 @@ class TaskSelectionDialog(QDialog):
             self.show()
             self._center_on_screen()  # Re-center after task completion
             self.update_completed_tasks_display()
+            self._refresh_task_combo()  # Refresh combo to disable newly completed task
             self.next_button.setEnabled(True)
         else:
             # Check again in 1 second
             QTimer.singleShot(1000, self._check_task_completion)
+    
+    def _refresh_task_combo(self):
+        """Refresh the task combo box to update disabled states after task completion"""
+        # Remember current selection
+        current_task_id = self.task_combo.currentData()
+        
+        # Clear and repopulate combo box
+        self.task_combo.clear()
+        completed_tasks = self._get_completed_task_ids()
+        
+        # Basic tasks that don't need 'Advanced' tag
+        basic_tasks = [ 'visual_imagery', 'attention_focus', 'mental_math', 'emotion_face']
+        
+        for task_id in self.available_task_ids:
+            if task_id in BL.AVAILABLE_TASKS:
+                task_name = BL.AVAILABLE_TASKS[task_id].get('name', task_id)
+                
+                # Add 'Advanced' tag for non-basic tasks
+                if task_id not in basic_tasks:
+                    task_name = f"{task_name} (Advanced)"
+                
+                # Mark completed tasks with checkmark
+                if task_id in completed_tasks:
+                    display_name = f"✓ {task_name} (Completed)"
+                else:
+                    display_name = task_name
+                
+                self.task_combo.addItem(display_name, task_id)
+                
+                # Disable the item if task is already completed
+                if task_id in completed_tasks:
+                    model = self.task_combo.model()
+                    item = model.item(self.task_combo.count() - 1)
+                    item.setEnabled(False)
+                    item.setToolTip("This task has already been completed")
+        
+        # Try to select first non-completed task
+        for i in range(self.task_combo.count()):
+            task_id = self.task_combo.itemData(i)
+            if task_id not in completed_tasks:
+                self.task_combo.setCurrentIndex(i)
+                break
     
     def update_completed_tasks_display(self):
         """Update the completed tasks counter"""
@@ -3655,7 +4153,7 @@ class MultiTaskAnalysisDialog(QDialog):
         title_label = QLabel("Multi-Task Analysis")
         title_label.setObjectName("DialogTitle")
         
-        subtitle_label = QLabel("Step 8 of 8: Analyze all completed tasks")
+        subtitle_label = QLabel("Step 9 of 9: Analyze all completed tasks")
         subtitle_label.setObjectName("DialogSubtitle")
         
         # Analysis actions card
@@ -3679,35 +4177,65 @@ class MultiTaskAnalysisDialog(QDialog):
         self.report_button.setEnabled(False)
         self.report_button.setStyleSheet("padding: 10px;")
         
-        self.seed_button = QPushButton("Seed Report")
-        self.seed_button.clicked.connect(self.seed_report)
-        self.seed_button.setEnabled(False)
-        self.seed_button.setStyleSheet("""
+        # Two protocol-specific seed buttons
+        self.seed_initial_button = QPushButton("Seed Initial Protocol")
+        self.seed_initial_button.clicked.connect(lambda: self.seed_report("initial"))
+        self.seed_initial_button.setEnabled(False)
+        self.seed_initial_button.setStyleSheet("""
             padding: 10px;
             background-color: #1e3a8a;
         """)
-        self.seed_button.setToolTip("Seed report to Mindspeller API")
+        self.seed_initial_button.setToolTip("Seed initial protocol report to Mindspeller API")
+        
+        self.seed_advanced_button = QPushButton("Seed Advanced Protocol")
+        self.seed_advanced_button.clicked.connect(lambda: self.seed_report("advanced"))
+        self.seed_advanced_button.setEnabled(False)
+        self.seed_advanced_button.setStyleSheet("""
+            padding: 10px;
+            background-color: #1e3a8a;
+        """)
+        self.seed_advanced_button.setToolTip("Seed advanced protocol report to Mindspeller API")
+        
+        # Determine which button to enable based on userData
+        user_data = getattr(self.workflow.main_window, 'user_data', {})
+        initial_protocol = user_data.get('initial_protocol', '')
+        
+        # If initial_protocol is empty, enable initial button; otherwise enable advanced button
+        if not initial_protocol:
+            # User hasn't done initial protocol yet
+            self.seed_initial_button.setEnabled(False)  # Will be enabled after analysis
+            self.seed_advanced_button.setVisible(False)  # Hide advanced button
+        else:
+            # User has completed initial protocol
+            self.seed_initial_button.setVisible(False)  # Hide initial button
+            self.seed_advanced_button.setEnabled(False)  # Will be enabled after analysis
         
         button_layout.addWidget(self.analyze_button)
         button_layout.addWidget(self.report_button)
-        button_layout.addWidget(self.seed_button)
+        button_layout.addWidget(self.seed_initial_button)
+        button_layout.addWidget(self.seed_advanced_button)
         
         actions_layout.addWidget(actions_label)
         actions_layout.addLayout(button_layout)
         
         # Detect selected region from backend URL
         selected_region = "Unknown"
-        if "stg-en" in BL.BACKEND_URL or "en.mindspell" in BL.BACKEND_URL:
+        if "en" in BL.BACKEND_URL or "en.mindspeller" in BL.BACKEND_URL:
             selected_region = "English (en)"
-        elif "stg-nl" in BL.BACKEND_URL or "nl.mindspell" in BL.BACKEND_URL:
+        elif "nl" in BL.BACKEND_URL or "nl.mindspeller" in BL.BACKEND_URL:
             selected_region = "Dutch (nl)"
         elif "127.0.0.1" in BL.BACKEND_URL or "localhost" in BL.BACKEND_URL:
             selected_region = "Local"
         
         # Add informational text about the buttons with selected region
+        user_data = getattr(self.workflow.main_window, 'user_data', {})
+        initial_protocol = user_data.get('initial_protocol', '')
+        protocol_status = "Initial Protocol (first time)" if not initial_protocol else "Advanced Protocol (follow-up)"
+        
         info_text = QLabel(
             f"📄 Generate Report: Save locally & share via superadmin panel\n"
-            f"☁️  Seed Report: Send directly to Mindspeller database\n"
+            f"☁️  Seed Protocol: Send directly to Mindspeller database\n"
+            f"    Protocol Type: {protocol_status}\n"
             f"    Selected Region: {selected_region} (from Step 2)"
         )
         info_text.setStyleSheet("""
@@ -3836,10 +4364,44 @@ class MultiTaskAnalysisDialog(QDialog):
         except Exception as e:
             print(f"Warning: Could not center dialog: {e}")
     
+    def _disconnect_headset(self):
+        """Disconnect the BrainLink headset and stop data streaming"""
+        try:
+            self.workflow.main_window.log_message("Disconnecting headset for analysis...")
+            
+            # Stop the BrainLink thread
+            BL.stop_thread_flag = True
+            
+            # Close serial connection if it exists
+            if hasattr(self.workflow.main_window, 'serial_obj') and self.workflow.main_window.serial_obj:
+                try:
+                    self.workflow.main_window.serial_obj.close()
+                    self.workflow.main_window.log_message("✓ Serial connection closed")
+                except Exception as e:
+                    self.workflow.main_window.log_message(f"Warning: Error closing serial: {e}")
+            
+            # Wait for thread to stop
+            if hasattr(self.workflow.main_window, 'brainlink_thread') and self.workflow.main_window.brainlink_thread:
+                if self.workflow.main_window.brainlink_thread.is_alive():
+                    self.workflow.main_window.brainlink_thread.join(timeout=2.0)
+                    if self.workflow.main_window.brainlink_thread.is_alive():
+                        self.workflow.main_window.log_message("Warning: Thread did not stop cleanly")
+                    else:
+                        self.workflow.main_window.log_message("✓ Data streaming stopped")
+            
+            self.workflow.main_window.log_message("✓ Headset disconnected successfully")
+        except Exception as e:
+            self.workflow.main_window.log_message(f"Error disconnecting headset: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def analyze_all_tasks(self):
         """Run REAL multi-task analysis"""
         self.results_text.setPlainText("Analyzing all tasks...\n\nThis may take a moment.")
         self.analyze_button.setEnabled(False)
+        
+        # Terminate headset connection before analysis
+        self._disconnect_headset()
         
         # Debug: Check what tasks are available
         engine = self.workflow.main_window.feature_engine
@@ -4091,7 +4653,13 @@ class MultiTaskAnalysisDialog(QDialog):
             self.results_text.setPlainText(results)
             print(f">>> [MAIN THREAD] Enabling report buttons and finish button <<<")
             self.report_button.setEnabled(True)
-            self.seed_button.setEnabled(True)
+            
+            # Enable the visible seed button based on protocol status
+            if self.seed_initial_button.isVisible():
+                self.seed_initial_button.setEnabled(True)
+            if self.seed_advanced_button.isVisible():
+                self.seed_advanced_button.setEnabled(True)
+            
             self.finish_button.setEnabled(True)  # Enable finish button after successful analysis
             print(f">>> [MAIN THREAD] Results displayed successfully <<<")
         else:
@@ -4111,6 +4679,32 @@ class MultiTaskAnalysisDialog(QDialog):
         self.results_text.setPlainText(f"Error during analysis:\n{error_msg}\n\nSee console for details.")
         self.analyze_button.setEnabled(True)
     
+    def _generate_report_text(self):
+        """Generate report text internally (without triggering download)"""
+        engine = self.workflow.main_window.feature_engine
+        
+        # Generate the report text using the feature engine
+        report_lines = []
+        report_lines.append("=" * 80)
+        report_lines.append("MULTI-TASK EEG ANALYSIS REPORT")
+        report_lines.append("=" * 80)
+        report_lines.append("")
+        
+        # Add results from multi_task_results
+        for task_name, results in engine.multi_task_results.items():
+            report_lines.append(f"\n{'='*60}")
+            report_lines.append(f"Task: {task_name}")
+            report_lines.append(f"{'='*60}")
+            
+            if isinstance(results, dict):
+                for key, value in results.items():
+                    report_lines.append(f"{key}: {value}")
+            else:
+                report_lines.append(str(results))
+        
+        self.generated_report_text = "\n".join(report_lines)
+        return self.generated_report_text
+    
     def generate_report(self):
         """Generate REAL full report - delegates to Enhanced GUI which opens save dialog"""
         # Check if analysis was done first
@@ -4124,44 +4718,11 @@ class MultiTaskAnalysisDialog(QDialog):
             return
         
         try:
-            # Generate report text for seeding
-            from io import StringIO
-            import sys
-            
-            # Capture report output
-            old_stdout = sys.stdout
-            sys.stdout = report_buffer = StringIO()
-            
-            try:
-                # Generate the report text using the feature engine
-                report_lines = []
-                report_lines.append("=" * 80)
-                report_lines.append("MULTI-TASK EEG ANALYSIS REPORT")
-                report_lines.append("=" * 80)
-                report_lines.append("")
-                
-                # Add results from multi_task_results
-                for task_name, results in engine.multi_task_results.items():
-                    report_lines.append(f"\n{'='*60}")
-                    report_lines.append(f"Task: {task_name}")
-                    report_lines.append(f"{'='*60}")
-                    
-                    if isinstance(results, dict):
-                        for key, value in results.items():
-                            report_lines.append(f"{key}: {value}")
-                    else:
-                        report_lines.append(str(results))
-                
-                self.generated_report_text = "\n".join(report_lines)
-                
-            finally:
-                sys.stdout = old_stdout
+            # Generate report text for later seeding
+            self._generate_report_text()
             
             # Call REAL report generation from main window (opens save dialog)
             self.workflow.main_window.generate_report_all_tasks()
-            
-            # Enable seed button now that report is generated
-            self.seed_button.setEnabled(True)
             
             # The method itself shows success/error messages via log_message
         except Exception as e:
@@ -4171,19 +4732,41 @@ class MultiTaskAnalysisDialog(QDialog):
                 f"Error generating report:\n{str(e)}"
             )
     
-    def seed_report(self):
-        """Seed the generated report to the database via API"""
-        if not self.generated_report_text:
+    def seed_report(self, protocol_type="initial"):
+        """Seed the generated report to the database via API
+        
+        Args:
+            protocol_type: Either "initial" or "advanced"
+        """
+        # Check if analysis was done first
+        engine = self.workflow.main_window.feature_engine
+        if not hasattr(engine, 'multi_task_results') or not engine.multi_task_results:
             QMessageBox.warning(
                 self,
-                "No Report",
-                "Please generate a report first before seeding."
+                "Analysis Required",
+                "No analysis results available.\n\nPlease run 'Analyze All Tasks' first."
             )
             return
         
+        # Generate report internally if not already generated
+        if not self.generated_report_text:
+            try:
+                self._generate_report_text()
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Report Generation Error",
+                    f"Error generating report for seeding:\n{str(e)}"
+                )
+                return
+        
+        # Store protocol type for API call
+        self.current_protocol_type = protocol_type
+        
         # Create confirmation dialog with email input
         dialog = QDialog(self)
-        dialog.setWindowTitle("Seed Report to Database")
+        protocol_display = "Initial Protocol" if protocol_type == "initial" else "Advanced Protocol"
+        dialog.setWindowTitle(f"Seed {protocol_display} Report")
         dialog.setModal(True)
         dialog.setMinimumWidth(450)
         
@@ -4195,11 +4778,11 @@ class MultiTaskAnalysisDialog(QDialog):
         layout.setSpacing(18)
         
         # Title
-        title = QLabel("Confirm Report Seeding")
+        title = QLabel(f"Confirm {protocol_display} Seeding")
         title.setObjectName("DialogTitle")
         
         # Info text
-        info = QLabel("Enter the email address for which this EEG report should be seeded in the database:")
+        info = QLabel(f"Enter the email address for which this {protocol_display} EEG report should be seeded in the database:")
         info.setWordWrap(True)
         info.setStyleSheet("font-size: 13px; color: #475569; margin-bottom: 8px;")
         
@@ -4262,14 +4845,17 @@ class MultiTaskAnalysisDialog(QDialog):
             self._send_report_to_api(email)
     
     def _send_report_to_api(self, email):
-        """Send the report to the seeding API endpoint"""
+        """Send the report to the seeding API endpoint with protocol_type"""
         import requests
         import uuid
+        
+        # Get protocol type (default to "initial" if not set)
+        protocol_type = getattr(self, 'current_protocol_type', 'initial')
         import base64
         from datetime import datetime
         
-        # Get JWT token
-        jwt_token = BL.JWT_TOKEN
+        # Get JWT token from main window
+        jwt_token = getattr(self.workflow.main_window, 'jwt_token', None)
         if not jwt_token:
             QMessageBox.warning(
                 self,
@@ -4289,14 +4875,30 @@ class MultiTaskAnalysisDialog(QDialog):
         report_bytes = self.generated_report_text.encode('utf-8')
         report_base64 = base64.b64encode(report_bytes).decode('utf-8')
         
+        # Use the protocol_type that was set when button was clicked
+        # (already set as self.current_protocol_type in seed_report method)
+        
+        # Use partner_id from workflow (entered in Partner ID dialog)
+        partner_id = getattr(self.workflow.main_window, 'partner_id', None)
+        if not partner_id:
+            partner_id = 1  # Fallback if not set
+        
+        # Get task count for metadata
+        engine = self.workflow.main_window.feature_engine
+        task_count = len(engine.multi_task_results) if hasattr(engine, 'multi_task_results') and engine.multi_task_results else 0
+        
         payload = {
             "email": email,
             "report_text": report_base64,
+            "is_base64": True,
+            "protocol_type": protocol_type,  # Use the protocol_type from button click
+            "partner_id": partner_id,
             "session_id": session_id,
             "generation_meta": {
                 "generated_at": datetime.now().isoformat(),
                 "analyzer_version": "1.0",
-                "workflow": "sequential_integrated"
+                "workflow": "sequential_integrated",
+                "task_count": task_count
             }
         }
         
@@ -4311,11 +4913,37 @@ class MultiTaskAnalysisDialog(QDialog):
         
         try:
             headers = {
-                "Authorization": f"Bearer {jwt_token}",
+                "X-Authorization": f"Bearer {jwt_token}",
                 "Content-Type": "application/json"
             }
             
-            response = requests.post(seed_url, json=payload, headers=headers, timeout=30)
+            # Determine if SSL verification should be disabled (for localhost)
+            verify_ssl = "127.0.0.1" not in seed_url and "localhost" not in seed_url
+            
+            # Log payload details for debugging
+            import json
+            payload_json = json.dumps(payload)
+            payload_size_kb = len(payload_json.encode('utf-8')) / 1024
+            
+            self.workflow.main_window.log_message(f"Seeding report to: {seed_url}")
+            self.workflow.main_window.log_message(f"Protocol type: {protocol_type}, Partner ID: {partner_id}")
+            self.workflow.main_window.log_message(f"Payload size: {payload_size_kb:.2f} KB")
+            
+            print(f"\n>>> SEEDING REPORT <<<")
+            print(f"URL: {seed_url}")
+            print(f"Protocol Type: {protocol_type}")
+            print(f"Partner ID: {partner_id}")
+            print(f"Payload Size: {payload_size_kb:.2f} KB")
+            print(f"Headers: {headers}")
+            print(f"Verify SSL: {verify_ssl}")
+            
+            response = requests.post(
+                seed_url, 
+                json=payload, 
+                headers=headers, 
+                timeout=60,  # Increased timeout for large reports
+                verify=verify_ssl
+            )
             
             progress.close()
             
@@ -4386,10 +5014,33 @@ class MultiTaskAnalysisDialog(QDialog):
                 
         except requests.exceptions.RequestException as e:
             progress.close()
+            error_details = str(e)
+            
+            # Provide more helpful error message for common issues
+            if "Connection aborted" in error_details or "10053" in error_details:
+                error_msg = (
+                    "Connection to server was lost.\n\n"
+                    "Possible causes:\n"
+                    "• Server closed the connection (check if Flask server is running)\n"
+                    "• Request timeout (report may be too large)\n"
+                    "• Network issue\n\n"
+                    f"Technical details: {error_details}"
+                )
+            elif "Connection refused" in error_details or "10061" in error_details:
+                error_msg = (
+                    "Cannot connect to server.\n\n"
+                    f"Is the server running at {seed_url}?\n\n"
+                    f"Technical details: {error_details}"
+                )
+            else:
+                error_msg = f"Failed to connect to API:\n{error_details}"
+            
+            self.workflow.main_window.log_message(f"Error seeding report: {error_details}")
+            
             QMessageBox.critical(
                 self,
                 "Network Error",
-                f"Failed to connect to API:\n{str(e)}"
+                error_msg
             )
         except Exception as e:
             progress.close()
@@ -4441,6 +5092,13 @@ class SequentialBrainLinkAnalyzerWindow(EnhancedBrainLinkAnalyzerWindow):
     def __init__(self, user_os, config: Optional[EnhancedAnalyzerConfig] = None):
         # Initialize the REAL Enhanced GUI
         super().__init__(user_os, config=config)
+        
+        # Initialize user_data attribute for protocol checking
+        self.user_data = {}
+        
+        # Initialize partner_id and partners_list
+        self.partner_id = None
+        self.partners_list = []
         
         # Ensure protocol groups use the correct Lifestyle tasks (now implemented)
         self._protocol_groups = {
@@ -4545,11 +5203,11 @@ if __name__ == "__main__":
     # Start with OS selection workflow
     window = SequentialBrainLinkAnalyzerWindow("Windows")
     
-    # Close PyInstaller splash screen after app is initialized
+     # Close PyInstaller splash screen after app is initialized
     try:
-        import pyi_splash
+        import pyi_splash  # type: ignore
         pyi_splash.close()
-    except:
+    except (ImportError, RuntimeError):
         pass
-    
+   
     sys.exit(app.exec())

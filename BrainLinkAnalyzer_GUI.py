@@ -75,9 +75,9 @@ pg.setConfigOption('imageAxisOrder', 'row-major')
 
 # Authentication settings from mother code
 BACKEND_URLS = {
-    "en": "https://stg-en.mindspell.be/api/cas/brainlink_data",
-    "nl": "https://stg-nl.mindspell.be/api/cas/brainlink_data", 
-    "local": "http://127.0.0.1:5000/api/cas/brainlink_data"
+    "en": "https://en.mindspeller.com/api/cas/token/login",
+    "nl": "https://nl.mindspeller.com/api/cas/token/login",
+    "local": "http://127.0.0.1:5000/api/cas/token/login"
 }
 
 LOGIN_URLS = {
@@ -589,7 +589,7 @@ def detect_brainlink():
     # Fallback to platform-specific detection
     print("Falling back to platform-specific detection...")
     if platform.system() == 'Windows':
-        BRAINLINK_SERIALS = ("5C361634682F", "5C3616327E59", "5C3616346938", "5C3616346838", "5C36163468D3")
+        BRAINLINK_SERIALS = ("5C361634682F", "5C3616327E59", "5C3616346938", "5C3616346838", "5C36163468D3", "5C3616327C21")
         for port in ports:
             if hasattr(port, 'hwid'):
                 if any(hw in port.hwid for hw in BRAINLINK_SERIALS):
@@ -638,8 +638,11 @@ def onRaw(raw):
         onRaw._last_values = [raw]
     
     live_data_buffer.append(raw)
-    if len(live_data_buffer) > 1000:
-        live_data_buffer = live_data_buffer[-1000:]
+    # CRITICAL FIX: Trim buffer IN-PLACE to prevent unbounded growth
+    # Using slice assignment del[:] to modify the SAME list object
+    # This ensures all modules referencing live_data_buffer see the trimmed version
+    if len(live_data_buffer) > 1024:  # Keep ~2 seconds of data at 512 Hz
+        del live_data_buffer[:-1024]  # Delete oldest samples, keep last 1024
     
     # Also feed data to feature engine if GUI is running
     if hasattr(onRaw, 'feature_engine') and onRaw.feature_engine:

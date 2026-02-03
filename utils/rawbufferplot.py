@@ -164,9 +164,9 @@ class MainWindow(QMainWindow):
         global BACKEND_URL, SERIAL_PORT
 
         if self.radio_en.isChecked():
-            BACKEND_URL = "https://stg-en.mindspell.be/api/cas/brainlink_data"
+            BACKEND_URL = "https://en.mindspeller.com/api/cas/brainlink_data"
         elif self.radio_nl.isChecked():
-            BACKEND_URL = "https://stg-nl.mindspell.be/api/cas/brainlink_data"
+            BACKEND_URL = "https://nl.mindspeller.com/api/cas/brainlink_data"
         else:
             BACKEND_URL = "http://127.0.0.1:5000/api/cas/brainlink_data"
 

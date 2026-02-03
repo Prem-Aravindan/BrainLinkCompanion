@@ -589,7 +589,7 @@ def detect_brainlink():
     # Fallback to platform-specific detection
     print("Falling back to platform-specific detection...")
     if platform.system() == 'Windows':
-        BRAINLINK_SERIALS = ("5C361634682F", "5C3616327E59", "5C3616346938", "5C3616346838", "5C36163468D3", "5C3616327C21")
+        BRAINLINK_SERIALS = ("5C361634682F", "5C3616327E59", "5C3616346938", "5C3616346838", "5C36163468D3", "5C3616327C21", "5C36163468D3")
         for port in ports:
             if hasattr(port, 'hwid'):
                 if any(hw in port.hwid for hw in BRAINLINK_SERIALS):

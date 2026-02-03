@@ -6,6 +6,22 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 
 pyside_datas, pyside_binaries, pyside_hiddenimports = collect_all('PySide6')
 
+# CRITICAL: Collect Shiboken6 - the binding generator that PySide6 depends on
+shiboken_datas, shiboken_binaries, shiboken_hiddenimports = collect_all('shiboken6')
+
+# Collect pyqtgraph data files only (avoid collect_all which crashes on examples/opengl modules)
+pyqtgraph_datas = collect_data_files('pyqtgraph', excludes=['examples', 'opengl'])
+pyqtgraph_binaries = []
+pyqtgraph_hiddenimports = [
+    'pyqtgraph',
+    'pyqtgraph.Qt',
+    'pyqtgraph.graphicsItems',
+    'pyqtgraph.widgets',
+    'pyqtgraph.exporters',
+    'pyqtgraph.colors',
+    'pyqtgraph.colormap',
+]
+
 # Collect scipy, numpy, and pandas data files to ensure all submodules are included
 scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
@@ -18,12 +34,16 @@ datas = [
     ('MindLink_User_Manual.txt', '.'),
 ]
 datas += pyside_datas
+datas += shiboken_datas
+datas += pyqtgraph_datas
 datas += scipy_datas
 datas += numpy_datas
 datas += pandas_datas
 
 binaries = []
 binaries += pyside_binaries
+binaries += shiboken_binaries
+binaries += pyqtgraph_binaries
 binaries += scipy_binaries
 binaries += numpy_binaries
 binaries += pandas_binaries
@@ -69,6 +89,8 @@ hiddenimports = [
     'random',
 ]
 hiddenimports += pyside_hiddenimports
+hiddenimports += shiboken_hiddenimports
+hiddenimports += pyqtgraph_hiddenimports
 hiddenimports += scipy_hiddenimports
 hiddenimports += numpy_hiddenimports
 hiddenimports += pandas_hiddenimports
@@ -88,7 +110,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['runtime_hook_pyside6.py'],
     excludes=excludes,
     noarchive=False,
     optimize=0,
@@ -99,10 +121,10 @@ splash = Splash(
     'assets\\splash.png',
     binaries=a.binaries,
     datas=a.datas,
-    text_pos=(300, 360),
+    text_pos=None,  # Disable text overlay - image already has "Starting..." text
     text_size=11,
     text_color='white',
-    text_default='Loading MindLink Analyzer...',
+    text_default='',  # Empty default since we're not showing text
     minify_script=True,
 )
 

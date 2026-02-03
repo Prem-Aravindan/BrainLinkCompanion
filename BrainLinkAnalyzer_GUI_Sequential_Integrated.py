@@ -1582,7 +1582,7 @@ class EnvironmentSelectionDialog(QDialog):
         env_label.setObjectName("DialogSectionTitle")
         
         self.env_combo = QComboBox()
-        self.env_combo.addItems(["English (en)", "Dutch (nl)"])
+        self.env_combo.addItems(["English (en)", "Dutch (nl)", "Local"])
         self.env_combo.currentTextChanged.connect(self.on_env_changed)
         
         # Warning message
@@ -1846,6 +1846,17 @@ class PartnerIDDialog(QDialog):
         info_label.setWordWrap(True)
         info_label.setStyleSheet("font-size: 12px; color: #3b82f6; padding: 12px; background: #eff6ff; border-radius: 6px; border-left: 3px solid #3b82f6;")
         
+        # Disclaimer for advanced tasks booking requirement
+        disclaimer_label = QLabel(
+            "⚠️ Important: If the partner conducts advanced tasks, reports can only be "
+            "generated if the user has a valid booking with the partner for an advanced session."
+        )
+        disclaimer_label.setWordWrap(True)
+        disclaimer_label.setStyleSheet(
+            "font-size: 12px; color: #f59e0b; padding: 12px; background: #fffbeb; "
+            "border-radius: 6px; border-left: 3px solid #f59e0b;"
+        )
+        
         # Navigation buttons
         nav_layout = QHBoxLayout()
         
@@ -1876,6 +1887,7 @@ class PartnerIDDialog(QDialog):
         layout.addWidget(subtitle_label)
         layout.addWidget(partner_card)
         layout.addWidget(info_label)
+        layout.addWidget(disclaimer_label)
         layout.addLayout(nav_layout)
         
         self.setLayout(layout)
@@ -4945,7 +4957,11 @@ class MultiTaskAnalysisDialog(QDialog):
                 verify=verify_ssl
             )
             
+            # Close progress dialog - use hide + deleteLater for complete removal
+            progress.hide()
             progress.close()
+            progress.deleteLater()
+            QtWidgets.QApplication.processEvents()
             
             if response.status_code == 200 or response.status_code == 201:
                 result = response.json()
@@ -5013,7 +5029,11 @@ class MultiTaskAnalysisDialog(QDialog):
                 )
                 
         except requests.exceptions.RequestException as e:
+            # Ensure progress dialog is closed on error - use hide + deleteLater
+            progress.hide()
             progress.close()
+            progress.deleteLater()
+            QtWidgets.QApplication.processEvents()
             error_details = str(e)
             
             # Provide more helpful error message for common issues
@@ -5043,7 +5063,11 @@ class MultiTaskAnalysisDialog(QDialog):
                 error_msg
             )
         except Exception as e:
+            # Ensure progress dialog is closed on error - use hide + deleteLater
+            progress.hide()
             progress.close()
+            progress.deleteLater()
+            QtWidgets.QApplication.processEvents()
             QMessageBox.critical(
                 self,
                 "Error",

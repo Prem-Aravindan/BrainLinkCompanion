@@ -385,8 +385,8 @@ class EnvironmentSelectionDialog(QDialog):
         
         # Backend URLs
         self.backend_urls = {
-            "English (en)": "https://stg-en.mindspell.be/api/cas/brainlink_data",
-            "Dutch (nl)": "https://stg-nl.mindspell.be/api/cas/brainlink_data",
+            "English (en)": "https://en.mindspeller.com/api/cas/brainlink_data",
+            "Dutch (nl)": "https://nl.mindspeller.com/api/cas/brainlink_data",
             "Local": "http://127.0.0.1:5000/api/cas/brainlink_data"
         }
         

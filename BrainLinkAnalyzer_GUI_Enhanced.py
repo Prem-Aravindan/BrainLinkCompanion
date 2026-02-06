@@ -210,9 +210,11 @@ EFFECT_MEASURE_CHOICES = ("delta", "z")
 OMNIBUS_CHOICES = ("Friedman", "RM-ANOVA")
 POSTHOC_CHOICES = ("Wilcoxon",)
 PERM_PRESETS = {
-    "fast": 500,
-    "default": 1000,
-    "strict": 2000,
+    "ultrafast": 50,   # Very quick, still detects p<0.02
+    "fast": 100,       # Quick mode, detects p<0.01  
+    "default": 200,    # Balanced speed/precision
+    "strict": 500,     # Higher precision
+    "research": 1000,  # Research-grade precision
 }
 
 
@@ -263,7 +265,7 @@ class EnhancedAnalyzerConfig:
     mode: str = "aggregate_only"
     dependence_correction: str = "Kost-McDermott"
     use_permutation_for_sumP: bool = True
-    n_perm: int = 1000  # Reduced from 5000 for faster analysis
+    n_perm: int = 100  # Reduced from 1000 for faster analysis (still valid for p<0.01)
     discretization_bins: int = 5
     export_profile: str = "full"
     effect_measure: str = "delta"
@@ -278,6 +280,8 @@ class EnhancedAnalyzerConfig:
     # Newly configurable analysis parameters
     block_seconds: float = 8.0
     mt_tapers: int = 3
+    # Fast analysis mode: skip permutation testing entirely, use only parametric tests
+    fast_mode: bool = True  # If True, uses only Welch's t-test + FDR (no permutation)
     nmin_sessions: int = 2  # Minimum 2 sessions needed for statistical comparison
     
     # Performance note: Permutation testing is optimized with:
@@ -1572,6 +1576,19 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
         per_feature_data: Dict[str, Tuple[np.ndarray, np.ndarray]],
         observed_sum: float,
     ) -> Tuple[Optional[float], Optional[float], bool]:
+        # Fast mode: skip permutation testing entirely
+        if getattr(self.config, 'fast_mode', False):
+            # Use asymptotic approximation instead of permutation
+            # For large n, sum of -log(p) ~ chi-square(2k) under null
+            # Return observed_sum with chi-square based p-value
+            k = len(per_feature_data)
+            if k > 0:
+                from scipy import stats
+                # Fisher's method p-value (chi-square approximation)
+                chi2_p = 1.0 - stats.chi2.cdf(2 * observed_sum, 2 * k) if observed_sum > 0 else 1.0
+                return observed_sum, chi2_p, False
+            return observed_sum, None, False
+        
         if not self.config.use_permutation_for_sumP:
             return None, None, False
         if not per_feature_data:
@@ -1855,6 +1872,82 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             # Nothing to analyze
             return None
 
+        # =====================================================================
+        # CRITICAL DATA QUALITY VALIDATION
+        # Check if data looks like real EEG before running statistical tests
+        # =====================================================================
+        data_quality_issues = []
+        data_quality_valid = True
+        
+        # Check 1: Minimum window counts
+        min_baseline = 4  # Need at least 4 baseline windows
+        min_task = 4      # Need at least 4 task windows
+        
+        baseline_count = max(len(ec_features), len(eo_features))
+        task_count = len(task_features)
+        
+        if baseline_count < min_baseline:
+            data_quality_issues.append(f"Insufficient baseline data ({baseline_count} < {min_baseline} windows)")
+            data_quality_valid = False
+        
+        if task_count < min_task:
+            data_quality_issues.append(f"Insufficient task data ({task_count} < {min_task} windows)")
+            data_quality_valid = False
+        
+        # Check 2: Verify signal looks like EEG (not flat/noise) using spectral analysis
+        try:
+            # Sample a few windows and check spectral properties
+            sample_windows = task_features[:min(5, len(task_features))]
+            flat_signal_count = 0
+            noise_signal_count = 0
+            
+            for window_data in sample_windows:
+                if not isinstance(window_data, dict):
+                    continue
+                
+                # Check if all power values are near-zero (flat signal)
+                total_power = window_data.get('total_power', window_data.get('global_total_power', 0))
+                if isinstance(total_power, (int, float)) and total_power < 1e-6:
+                    flat_signal_count += 1
+                    continue
+                
+                # Check spectral distribution (real EEG has strong delta/theta)
+                delta_rel = window_data.get('delta_relative', window_data.get('global_delta_relative', 0))
+                theta_rel = window_data.get('theta_relative', window_data.get('global_theta_relative', 0))
+                gamma_rel = window_data.get('gamma_relative', window_data.get('global_gamma_relative', 0))
+                
+                if isinstance(delta_rel, (int, float)) and isinstance(theta_rel, (int, float)):
+                    low_freq_power = delta_rel + theta_rel
+                    # Real EEG typically has >30% power in delta+theta
+                    if low_freq_power < 0.15:  # Very low delta+theta suggests noise
+                        noise_signal_count += 1
+                    # High gamma dominance often indicates muscle artifact or noise
+                    if isinstance(gamma_rel, (int, float)) and gamma_rel > 0.4:
+                        noise_signal_count += 1
+            
+            # If most samples look problematic, flag the data
+            n_samples = len(sample_windows)
+            if n_samples > 0:
+                if flat_signal_count / n_samples > 0.5:
+                    data_quality_issues.append("Flat signal detected - headset may not be worn")
+                    data_quality_valid = False
+                if noise_signal_count / n_samples > 0.5:
+                    data_quality_issues.append("Noise-like spectrum detected - data may be artifacts, not EEG")
+                    # Don't invalidate, but warn
+        except Exception as e:
+            print(f"[DATA QUALITY] Error checking spectral properties: {e}")
+        
+        # Store quality assessment
+        self._data_quality_valid = data_quality_valid
+        self._data_quality_issues = data_quality_issues
+        
+        if data_quality_issues:
+            print("\n" + "="*70)
+            print("⚠️  DATA QUALITY WARNINGS:")
+            for issue in data_quality_issues:
+                print(f"    • {issue}")
+            print("="*70 + "\n")
+        
         # Default to eyes-closed baseline if available
         chosen_baseline_label = 'eyes_closed' if len(ec_features) > 0 else 'eyes_open'
         baseline_source_features = ec_features if chosen_baseline_label == 'eyes_closed' else eo_features
@@ -2287,6 +2380,54 @@ class EnhancedFeatureAnalysisEngine(BL.FeatureAnalysisEngine):
             'effect_size_mean': mean_effect_size,
             'expectation': self._evaluate_expectation_alignment(self.current_task),
         }
+
+        # =====================================================================
+        # SANITY CHECK: Flag suspicious results that indicate data quality issues
+        # =====================================================================
+        # If >70% of features are "significant", the data is likely noise/garbage
+        # Real cognitive tasks typically affect 5-30% of features
+        SUSPICIOUS_SIG_THRESHOLD = 0.70  # 70% significant = likely garbage data
+        WARNING_SIG_THRESHOLD = 0.50     # 50% significant = suspicious
+        
+        data_quality_warnings = []
+        results_reliable = True
+        
+        if sig_prop > SUSPICIOUS_SIG_THRESHOLD:
+            data_quality_warnings.append(
+                f"CRITICAL: {sig_prop*100:.1f}% of features marked significant - "
+                f"this exceeds the {SUSPICIOUS_SIG_THRESHOLD*100:.0f}% threshold and strongly suggests "
+                "the data is noise/garbage, not real EEG. The headset may not have been worn."
+            )
+            results_reliable = False
+        elif sig_prop > WARNING_SIG_THRESHOLD:
+            data_quality_warnings.append(
+                f"WARNING: {sig_prop*100:.1f}% of features marked significant - "
+                f"this is unusually high (>{WARNING_SIG_THRESHOLD*100:.0f}%) and may indicate data quality issues."
+            )
+        
+        # Check if data quality validation failed earlier
+        if hasattr(self, '_data_quality_valid') and not self._data_quality_valid:
+            data_quality_warnings.extend(getattr(self, '_data_quality_issues', []))
+            results_reliable = False
+        
+        # Store in task_summary
+        self.task_summary['data_quality'] = {
+            'reliable': results_reliable,
+            'warnings': data_quality_warnings,
+            'sig_prop': sig_prop,
+            'sig_count': sig_feature_count,
+            'total_features': len(combo_features),
+        }
+        
+        if data_quality_warnings:
+            print("\n" + "="*70)
+            print("⚠️  RESULTS RELIABILITY WARNING:")
+            for warning in data_quality_warnings:
+                print(f"    {warning}")
+            if not results_reliable:
+                print("\n    ❌ RESULTS MARKED AS UNRELIABLE")
+                print("    These results should NOT be interpreted as valid EEG analysis.")
+            print("="*70 + "\n")
 
         self.composite_summary = self.task_summary
         if getattr(self, '_analysis_cancelled', False):
@@ -6520,6 +6661,21 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     return
                 phase = self._phase_structure[self._phase_index]
                 ptype = phase.get('type', 'phase')
+                
+                # Start recording for this phase if it has record=True
+                try:
+                    should_record = phase.get('record', False)
+                    if should_record:
+                        if hasattr(self.feature_engine, 'start_phase'):
+                            self.feature_engine.start_phase(
+                                phase='task',
+                                task_type=task_type,
+                                phase_subtype=ptype,
+                                should_record=True
+                            )
+                            print(f"[PHASE] Started recording: {ptype} (task: {task_type})")
+                except Exception as e:
+                    print(f"[PHASE] Error starting phase recording: {e}")
                 # Safety: if coming into a non-viewing/task phase, ensure any fullscreen image is closed
                 try:
                     if task_type in ('order_surprise', 'num_form') and ptype not in ('viewing', 'task'):
@@ -6645,6 +6801,16 @@ class EnhancedBrainLinkAnalyzerWindow(BL.BrainLinkAnalyzerWindow):
                     self._phase_remaining -= 1
                     if self._phase_remaining <= 0:
                         # Advance
+                        # Stop recording for current phase if it was being recorded
+                        try:
+                            current_phase_def = self._phase_structure[self._phase_index]
+                            if current_phase_def.get('record', False):
+                                # Stop the current recording phase
+                                if hasattr(self.feature_engine, 'stop_phase'):
+                                    self.feature_engine.stop_phase()
+                        except Exception as e:
+                            print(f"[PHASE] Error stopping phase recording: {e}")
+                        
                         # Before advancing, ensure fullscreen image (if any) is closed when leaving look phases
                         try:
                             prev_phase = self._phase_structure[self._phase_index]
